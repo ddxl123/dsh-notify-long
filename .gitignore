@@ -1,6 +1,9 @@
 # In-repo peer links created by `npm run link-deps` (they point at a local dsh install).
 node_modules/
 
+# macOS metadata that has no business in the repository.
+.DS_Store
+
 # Local runtime state and secrets.
 *.log
 outbox.json

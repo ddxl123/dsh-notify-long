@@ -20,5 +20,5 @@
 dsh-notify-long:
   email:
     enabled: true
-    user: 1033839760@qq.com
+    user: 123456789@qq.com
     # to: [you@example.com]     # optional: empty means "mail the account above"

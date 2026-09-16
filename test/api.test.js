@@ -35,7 +35,7 @@ function makeApi(options = {}) {
   const settings = options.settings ?? {
     enabled: true,
     alerts: { channels: ['sound', 'desktop', 'email'] },
-    email: { user: '1033839760@qq.com', pass: 'code' },
+    email: { user: '123456789@qq.com', pass: 'code' },
     sound: { enabled: false },
     desktop: { enabled: false },
   }
@@ -81,7 +81,7 @@ test('snapshot reports the status, the log and the queue without secrets', async
   assert.deepEqual(value.status.channels, ['email'], 'sound and desktop are switched off in this configuration')
   assert.equal(value.status.email.ready, true)
   assert.equal(value.status.email.host, 'smtp.qq.com')
-  assert.deepEqual(value.status.email.to, ['1033839760@qq.com'])
+  assert.deepEqual(value.status.email.to, ['123456789@qq.com'])
   assert.equal(value.status.email.secretSource, 'inline')
   assert.equal(value.status.queued, 1)
   assert.equal(value.status.delivered, 2)

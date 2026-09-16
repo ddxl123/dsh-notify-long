@@ -128,7 +128,7 @@ test('a Chinese alert renders a Chinese subject and body', () => {
     // message builder then renders in the language the whole configuration names.
     settings: {
       language: 'zh',
-      email: resolveEmailSettings({ email: { user: '1033839760@qq.com', pass: 'code', subjectPrefix: '[DSH]' } }),
+      email: resolveEmailSettings({ email: { user: '123456789@qq.com', pass: 'code', subjectPrefix: '[DSH]' } }),
     },
   })
   assert.notEqual(message, undefined)

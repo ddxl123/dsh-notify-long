@@ -192,7 +192,7 @@ function createFakeTransport(options = {}) {
     status: {
       enabled: true,
       channels: ['desktop', 'email'],
-      email: { ready: true, host: 'smtp.qq.com', port: 465, to: ['1033839760@qq.com'], summary: 'ready' },
+      email: { ready: true, host: 'smtp.qq.com', port: 465, to: ['123456789@qq.com'], summary: 'ready' },
       quiet: { configured: false, active: false, range: [], label: 'not configured' },
       queued: 1,
       delivered: 1,
@@ -412,12 +412,12 @@ test('a save the host refuses keeps the drafts and reports the failure', async (
 test('a QQ address is saved together with the provider preset it implies', async () => {
   const { props, ops, layer } = mount()
   assert.equal(props.useNotifySettings((snapshot) => snapshot).autoPreset, false, 'nothing to infer while the account is empty')
-  props.edit('user', '1033839760@qq.com')
+  props.edit('user', '123456789@qq.com')
   props.edit('pass', 'authorization-code')
   assert.equal(props.useNotifySettings((snapshot) => snapshot).autoPreset, true)
   assert.equal(await props.save(), true)
   assert.deepEqual(ops, [
-    { op: 'set', path: ['email', 'user'], value: '1033839760@qq.com' },
+    { op: 'set', path: ['email', 'user'], value: '123456789@qq.com' },
     { op: 'set', path: ['email', 'pass'], value: 'authorization-code' },
     { op: 'set', path: ['email', 'preset'], value: 'qq' },
   ])
@@ -491,7 +491,7 @@ test('the log panel reads the host route and renders what it answers', async () 
   assert.equal(entries.length, 1)
   assert.equal(flatten(entries[0]).some((element) => element.props?.children === 'delivered completed “build” over email'), true)
   const statuses = flatten(tree).filter((element) => element.props?.className === 'dshNotifyLongStatus')
-  assert.match(statuses[0].props.children, /logEmail: logReady smtp\.qq\.com:465 → 1033839760@qq\.com/)
+  assert.match(statuses[0].props.children, /logEmail: logReady smtp\.qq\.com:465 → 123456789@qq\.com/)
   assert.match(statuses[1].props.children, /logQueued: error “turn failed” \(2\)/, 'a queued alert is named, not just counted')
 })
 

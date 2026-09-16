@@ -136,7 +136,7 @@ node scripts/link-harness-deps.mjs --from /path/to/node_modules
 dsh-notify-long:
   language: auto                   # 邮件语言：auto | zh | en（auto 跟随系统）
   email:
-    user: 1033839760@qq.com        # QQ 邮箱地址（或只写 QQ 号）会自动选中 qq 预设
+    user: 123456789@qq.com        # QQ 邮箱地址（或只写 QQ 号）会自动选中 qq 预设
     pass: "你的授权码"              # 也可以不写，改用 DSH_SMTP_PASSWORD 环境变量
     # to: [you@example.com]        # 可选：留空就是「发给自己」
 ```

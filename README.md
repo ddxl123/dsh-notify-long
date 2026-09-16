@@ -132,7 +132,7 @@ The card is the easy path; the same section written by hand needs no server fiel
 dsh-notify-long:
   language: auto                       # alert language: auto | zh | en (auto follows the system)
   email:
-    user: 1033839760@qq.com            # a QQ address (or a bare QQ number) selects the QQ preset
+    user: 123456789@qq.com            # a QQ address (or a bare QQ number) selects the QQ preset
     pass: "your-authorization-code"    # or leave this out and export DSH_SMTP_PASSWORD
     # to: [you@example.com]            # optional: empty means "mail the account above"
 ```

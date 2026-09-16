@@ -37,7 +37,7 @@ function makeEngine(options = {}) {
     enabled: true,
     alerts: { channels: ['desktop', 'email'], kinds: {} },
     quietHours: {},
-    email: { user: '1033839760@qq.com', pass: 'code' },
+    email: { user: '123456789@qq.com', pass: 'code' },
   }
   const engine = new Engine({
     outbox,
