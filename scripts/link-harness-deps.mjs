@@ -43,13 +43,15 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
  * (`defineTool`); the settings contract test also imports `dsh-settings` for
  * its secret redaction, which is the same module the running harness injects.
  *
- * `cordis` and `dsh-client-connection` are linked for the transport integration
- * test, which mounts the real plugin into a real runtime and posts to the route
- * the settings card uses. Nothing in `src/` or `lib/` imports them: a Cordis
- * plugin is handed its context, and the card's route is registered through the
- * injected `connection` service.
+ * `cordis`, `dsh-client-connection` and `dsh-user-questions` are linked for the
+ * integration tests: the transport test mounts the real plugin into a real
+ * runtime and posts to the route the settings card uses, and the question test
+ * asks a real question through the real waterfall service. Nothing in `src/` or
+ * `lib/` imports them: a Cordis plugin is handed its context, the card's route
+ * is registered through the injected `connection` service, and questions arrive
+ * as events.
  */
-export const PEERS = ['schemastery', 'dsh-tools', 'dsh-settings', 'cordis', 'dsh-client-connection']
+export const PEERS = ['schemastery', 'dsh-tools', 'dsh-settings', 'cordis', 'dsh-client-connection', 'dsh-user-questions']
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 

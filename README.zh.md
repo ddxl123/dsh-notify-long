@@ -3,7 +3,7 @@
 简体中文 | [English](README.md)
 
 [![release](https://img.shields.io/github/v/release/ddxl123/dsh-notify-long?label=release&color=blue)](https://github.com/ddxl123/dsh-notify-long/releases)
-[![test](https://img.shields.io/badge/tests-168%20passing-brightgreen)](https://github.com/ddxl123/dsh-notify-long)
+[![test](https://img.shields.io/badge/tests-173%20passing-brightgreen)](https://github.com/ddxl123/dsh-notify-long)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）装上一双"耳朵"和一部"电话"：**任务做完、出错、需要你回答问题时，用系统提示音、桌面横幅和邮件提醒你**，不用一直盯着终端。
@@ -93,7 +93,7 @@ node scripts/link-harness-deps.mjs --from /path/to/node_modules
 
 重复执行是安全的；已经能解析时会直接告诉你无需处理。git / npm 安装会通过本包的 `prepare` 脚本自动完成；只有 `link:` 安装（`add .` 或绝对路径）需要手动这一步，因为 pnpm 对本地软链不跑生命周期脚本。同一步也会链上 `@deepseek-ai/dsh-settings`，它只被设置契约测试用到（运行时的 `dsh-settings` 由 harness 自己注入）。
 
-即使没有这两个包，插件依然能加载，只有两点变化：组合条目不做过校验（文档里的默认值照常生效），以及 `notify_*` 工具改用普通定义而不是 `defineTool`。同一条命令还会链上三个只有测试会导入的 peer：`@deepseek-ai/dsh-settings`（设置契约测试）、`@deepseek-ai/cordis` 与 `@deepseek-ai/dsh-client-connection`（传输层集成测试：把真实插件挂到真实 Connection 服务上验证卡片那条路由）。运行时这些服务由 harness 注入，插件代码本身从不导入它们。
+即使没有这两个包，插件依然能加载，只有两点变化：组合条目不做过校验（文档里的默认值照常生效），以及 `notify_*` 工具改用普通定义而不是 `defineTool`。同一条命令还会链上只有测试会导入的几个 peer：`@deepseek-ai/dsh-settings`（设置契约测试）、`@deepseek-ai/cordis`、`@deepseek-ai/dsh-client-connection` 与 `@deepseek-ai/dsh-user-questions`（集成测试：把真实插件分别挂到真实 Connection 服务与真实提问服务上）。运行时这些服务由 harness 注入，插件代码本身从不导入它们。
 
 ## 配置
 
@@ -244,6 +244,7 @@ dsh-notify-long:
 
 判定细节（每一条都在 `test/triggers.test.js` 里被断言）：
 
+- **提问一定会通知到你**：`user-questions/request` 是 Cordis 的 **waterfall** 事件——第一个返回答案的监听者"认领"请求，后面的监听者全部不再执行，而浏览器界面正是这样一个应答者。插件用 `prepend` 注册自己的观察者，所以"你有没有被告知"不取决于还有谁在听、谁先注册；它始终用 `next()` 放行，请求照常送到界面。即使 harness 没带 agent 身份，提问也照样提醒。
 - **同一轮只提醒一次**：这一轮如果已经因为"提问/授权/报错"提醒过，会话回到空闲时不会再补一条"完成"。
 - **一次失败只发一封**：`agent/error` 观察者一看到失败就提醒，随后的空闲判定用的是同一个冷却键，所以同一次失败不会发两封邮件。
 - **失败不会被说成"完成"**：如果某轮以失败结束、但没有观察到错误事件，空闲判定依然按"失败"提醒。
@@ -362,9 +363,9 @@ node scripts/test-alert.mjs --channel email --trace   # 打印 SMTP 会话，凭
 
 ```bash
 npm run link-deps          # 链好 harness peer 依赖，boot 级测试才会真正跑
-node --test test/          # 168 个测试：策略、渲染、SMTP（本地假服务器）、队列、引擎、
+node --test test/          # 173 个测试：策略、渲染、SMTP（本地假服务器）、队列、引擎、
                            # 活动日志、卡片接口、消息文案表、boot 级挂载、浏览器端卡片、
-                           # 触发规则规格，以及真实 Cordis/Connection 上的传输层集成测试
+                           # 触发规则规格，以及真实 Cordis/Connection 传输层与真实提问服务的集成测试
 node scripts/test-alert.mjs --channel all --json
 node scripts/test-alert.mjs --channel email --trace   # 打印 SMTP 会话，凭据已脱敏
 ```
@@ -385,7 +386,7 @@ scripts/install.mjs       包装脚本：`dsh plugin --profile add` 加 harness 
 scripts/link-harness-deps.mjs  让本包能解析到 harness peer 依赖
 scripts/test-alert.mjs    脱离 harness 的通道自检
 test/                     单元测试 + 假 SMTP 服务器 + 假 harness 挂载测试 + 浏览器端卡片测试
-                          + 触发规则规格 + 真实 Cordis/Connection 传输层测试
+                          + 触发规则规格 + 真实 Cordis 运行时集成测试（Connection 传输层、提问 waterfall）
 ```
 
 ## 设计取舍

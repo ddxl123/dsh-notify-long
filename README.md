@@ -3,7 +3,7 @@
 [简体中文](README.zh.md) | English
 
 [![release](https://img.shields.io/github/v/release/ddxl123/dsh-notify-long?label=release&color=blue)](https://github.com/ddxl123/dsh-notify-long/releases)
-[![test](https://img.shields.io/badge/tests-168%20passing-brightgreen)](https://github.com/ddxl123/dsh-notify-long)
+[![test](https://img.shields.io/badge/tests-173%20passing-brightgreen)](https://github.com/ddxl123/dsh-notify-long)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Give [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) an ear and a phone line: **when a task finishes, fails, or needs your answer, you get a system sound, a desktop banner, and an email** — no more babysitting the terminal.
@@ -89,7 +89,7 @@ node scripts/link-harness-deps.mjs --from /path/to/node_modules
 
 It is safe to re-run, and says so when they already resolve. A git or npm install does this for you through the package's `prepare` script; only a `link:` install (`add .`, or an absolute path) needs the manual step, because pnpm runs no lifecycle scripts for a local link.
 
-Without them the plugin still loads, and only two things change: the composition row goes unvalidated (the documented defaults still apply), and the `notify_*` tools use plain definitions instead of `defineTool`. The same step links three peers that only tests import — `@deepseek-ai/dsh-settings` (the settings contract), and `@deepseek-ai/cordis` + `@deepseek-ai/dsh-client-connection` (the transport integration test that mounts the real plugin against the real Connection service). At runtime those services are injected by the running harness, never imported.
+Without them the plugin still loads, and only two things change: the composition row goes unvalidated (the documented defaults still apply), and the `notify_*` tools use plain definitions instead of `defineTool`. The same step links the peers that only tests import — `@deepseek-ai/dsh-settings` (the settings contract), and `@deepseek-ai/cordis`, `@deepseek-ai/dsh-client-connection` and `@deepseek-ai/dsh-user-questions` (the integration tests that mount the real plugin against the real Connection and user-question services). At runtime those services are injected by the running harness, never imported.
 
 ## Configure
 
@@ -240,6 +240,7 @@ The panel posts to one exact route, `/api/dsh-notify-long`, which the host half 
 
 Decision details — each of these is asserted in `test/triggers.test.js`:
 
+- **A question always reaches you.** `user-questions/request` is a Cordis *waterfall*: the first listener that returns an answer claims the request and the rest of the chain never runs — and the browser UI is such an answerer. The plugin registers its observer with `prepend`, so "you are told" holds no matter who else is listening or in what order they registered, and it always delegates with `next()` so the request still reaches the UI. A question the harness sends without an agent identity still alerts.
 - **One alert per turn.** If the turn already alerted for a question, approval, or error, the idle transition does not add a "finished" notice.
 - **A failure is announced once.** The `agent/error` observer alerts the moment it sees the failure, and the idle assessment that follows reads the same cooldown key, so one failure never mails twice.
 - **A failed turn is never "finished".** If a turn ended in failure without an observed error event, the idle assessment still reports it as a failure.
@@ -349,10 +350,10 @@ Usual causes: a login password instead of an app password, port 465 blocked by a
 
 ```bash
 npm run link-deps          # link the harness peers so the boot-level tests run
-node --test test/          # 168 tests: policy, rendering, SMTP (local fake server), queue, engine,
+node --test test/          # 173 tests: policy, rendering, SMTP (local fake server), queue, engine,
                            # activity log, card endpoints, message catalogue, boot-level mount,
-                           # browser-bundle card, the trigger spec, and a real Cordis/Connection
-                           # transport integration
+                           # browser-bundle card, the trigger spec, a real Cordis/Connection
+                           # transport integration, and real user-question notifications
 node scripts/test-alert.mjs --channel all --json
 node scripts/test-alert.mjs --channel email --trace   # SMTP conversation, credentials redacted
 ```
@@ -373,7 +374,8 @@ scripts/install.mjs          Wrapper: `dsh plugin --profile add` plus the harnes
 scripts/link-harness-deps.mjs  Makes the harness peers resolvable from this package
 scripts/test-alert.mjs       Channel self-check outside the harness
 test/                        Unit tests, a fake SMTP server, a fake-harness mount test, the browser bundle's card
-                             tests, the trigger spec, and a real Cordis/Connection transport test
+                             tests, the trigger spec, and integration tests against the real Cordis
+                             runtime (Connection transport, user-question waterfall)
 ```
 
 ## Design notes

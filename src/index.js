@@ -435,20 +435,25 @@ export function apply(ctx, rawConfig) {
     })
   })
 
+  // Both of these are Cordis *waterfall* events: the first listener that returns
+  // an answer claims the request and the rest of the chain never runs. The
+  // browser UI is one such answerer, and after a live plugin reload it can
+  // already be registered — so the observer is registered with `prepend`, which
+  // puts it ahead of every answerer and makes "the operator is told" independent
+  // of who else is listening. It always delegates with `next()`, so the request
+  // is never consumed here.
   subscribe(ctx, log, 'user questions', () => {
     ctx.on('user-questions/request', (request, next) => {
-      const sessionId = String(request?.agent?.id ?? '')
-      if (sessionId !== '') runtime.question({ sessionId, request })
+      runtime.question({ sessionId: sessionOf(request), request })
       return next()
-    })
+    }, { prepend: true })
   })
 
   subscribe(ctx, log, 'approval requests', () => {
     ctx.on('approval/request', (request, next) => {
-      const sessionId = String(request?.agent?.id ?? '')
-      if (sessionId !== '') runtime.approval({ sessionId, request })
+      runtime.approval({ sessionId: sessionOf(request), request })
       return next()
-    })
+    }, { prepend: true })
   })
 
   subscribe(ctx, log, 'subagent completions', () => {
@@ -476,6 +481,21 @@ export function apply(ctx, rawConfig) {
       }
     }).catch((error) => log.warn(`could not flush the alert outbox (${describeError(error)})`))
   }
+}
+
+/**
+ * The session a request belongs to, when it named a live agent.
+ *
+ * `user-questions/request` declares its `agent` optional, so this returns
+ * `undefined` rather than an empty string: an unattributed question still has to
+ * alert, and an empty string would look like a session id everywhere downstream.
+ *
+ * @param {any} request - a question or approval request
+ * @returns {string | undefined} the owning session id
+ */
+function sessionOf(request) {
+  const id = request?.agent?.id
+  return id === undefined || id === null || String(id) === '' ? undefined : String(id)
 }
 
 /**
