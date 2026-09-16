@@ -1,5 +1,5 @@
-# In-repo peer links created by `npm run test:setup` (they point at a local dsh install).
-test/node_modules/
+# In-repo peer links created by `npm run link-deps` (they point at a local dsh install).
+node_modules/
 
 # Local runtime state and secrets.
 *.log

@@ -47,6 +47,111 @@ test('sendMail delivers a message over a plain connection with AUTH PLAIN', asyn
   }
 })
 
+test('the envelope paths carry the RFC 5321 angle brackets QQ Mail insists on', async () => {
+  // Regression: the client used to send `MAIL FROM:user@qq.com`, which QQ
+  // answers with `502 Invalid input from <ip> to <host>.` while accepting the
+  // bracketed form in the same session. The stub server here is strict exactly
+  // like QQ, so a bare path fails the delivery outright.
+  const server = await startSmtpServer({ auth: ['PLAIN'], user: 'user@example.com', pass: 'secret' })
+  try {
+    const result = await sendMail({
+      host: '127.0.0.1',
+      port: server.port,
+      tls: 'plain',
+      requireTls: false,
+      user: 'user@example.com',
+      pass: 'secret',
+      from: 'DSH <bot@example.com>',
+      to: ['ops@example.com', 'second@example.com'],
+      raw: sampleMessage(),
+      timeoutMs: 5_000,
+    })
+    assert.equal(result.ok, true, result.detail)
+    assert.equal(server.received[0].envelope.mailFrom, '<bot@example.com>', 'a display name is stripped, the brackets are not')
+    assert.deepEqual(server.received[0].envelope.rcptTo, ['<ops@example.com>', '<second@example.com>'])
+  } finally {
+    await server.close()
+  }
+})
+
+test('esmtpArg always brackets a path and never doubles the brackets', async () => {
+  const { esmtpArg } = await import('../lib/email/smtp.js')
+  assert.equal(esmtpArg('user@example.com'), '<user@example.com>')
+  assert.equal(esmtpArg('<user@example.com>'), '<user@example.com>')
+  assert.equal(esmtpArg('  user@example.com  '), '<user@example.com>')
+  assert.equal(esmtpArg(''), '<>', 'the null reverse-path of a bounce is still a valid path')
+})
+
+test('a rejected envelope names the command that was rejected', async () => {
+  const server = await startSmtpServer({ auth: [], rejectSender: true })
+  try {
+    const result = await sendMail({
+      host: '127.0.0.1',
+      port: server.port,
+      tls: 'plain',
+      requireTls: false,
+      from: 'bot@example.com',
+      to: ['ops@example.com'],
+      raw: sampleMessage(),
+      timeoutMs: 5_000,
+    })
+    assert.equal(result.ok, false)
+    assert.equal(result.code, 'SMTP_REJECT')
+    assert.match(result.detail, /SMTP rejected the sender \(502 5\.5\.2 sender rejected by policy\) for MAIL FROM:<bot@example\.com>/)
+  } finally {
+    await server.close()
+  }
+})
+
+test('the opt-in transcript shows the conversation with credentials redacted', async () => {
+  const server = await startSmtpServer({ auth: ['PLAIN'], user: 'user@example.com', pass: 'top-secret-pass' })
+  try {
+    const result = await sendMail({
+      host: '127.0.0.1',
+      port: server.port,
+      tls: 'plain',
+      requireTls: false,
+      user: 'user@example.com',
+      pass: 'top-secret-pass',
+      from: 'bot@example.com',
+      to: ['ops@example.com'],
+      raw: sampleMessage(),
+      timeoutMs: 5_000,
+      trace: true,
+    })
+    assert.equal(result.ok, true, result.detail)
+    const transcript = result.transcript.join('\n')
+    assert.match(transcript, /> EHLO /)
+    assert.match(transcript, /> AUTH PLAIN \[redacted\]/)
+    assert.match(transcript, /> MAIL FROM:<bot@example\.com>/)
+    assert.match(transcript, /> RCPT TO:<ops@example\.com>/)
+    assert.match(transcript, /> DATA/)
+    assert.match(transcript, /< 250 /)
+    const secret = Buffer.from('\u0000user@example.com\u0000top-secret-pass', 'utf8').toString('base64')
+    assert.equal(transcript.includes(secret), false, 'the SASL payload never reaches the transcript')
+    assert.equal(transcript.includes('top-secret-pass'), false)
+  } finally {
+    await server.close()
+  }
+
+  const quiet = await startSmtpServer({ auth: [] })
+  try {
+    const plain = await sendMail({
+      host: '127.0.0.1',
+      port: quiet.port,
+      tls: 'plain',
+      requireTls: false,
+      from: 'bot@example.com',
+      to: ['ops@example.com'],
+      raw: sampleMessage(),
+      timeoutMs: 5_000,
+    })
+    assert.equal(plain.transcript, undefined, 'the transcript is opt-in: it is not carried around by default')
+  } finally {
+    await quiet.close()
+  }
+})
+
 test('sendMail reports a failed authentication instead of throwing', async () => {
   const server = await startSmtpServer({ auth: ['PLAIN'], user: 'user@example.com', pass: 'right' })
   try {

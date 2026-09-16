@@ -7,6 +7,12 @@
  * need, so the client's behaviour under real server responses is verified
  * instead of assumed.
  *
+ * The envelope parser is deliberately **strict**, the way QQ Mail is: a
+ * `MAIL FROM`/`RCPT TO` path without the RFC 5321 angle brackets is answered
+ * with the same `502 Invalid input from … to ….` QQ sends. Lenient servers
+ * (Postfix, Gmail) accept the bare form, so a lenient stub here would hide the
+ * one bug that actually cost a real operator an email.
+ *
  * @module dsh-notify-long/test/helpers/smtp-server
  */
 
@@ -16,6 +22,7 @@ import { createServer } from 'node:net'
  * @typedef {object} SmtpServerOptions
  * @property {string[]} [auth] - mechanisms to advertise; an empty list advertises none
  * @property {boolean} [requireAuth] - reject MAIL FROM before a successful AUTH
+ * @property {boolean} [rejectSender] - reject every MAIL FROM with 502, the way a strict server refuses a sender
  * @property {string[]} [rejectRecipients] - recipient addresses rejected with 550
  * @property {boolean} [failData] - reject the message body with 554
  * @property {string} [user] - accepted authentication user
@@ -32,11 +39,14 @@ export async function startSmtpServer(options = {}) {
   const state = {
     auth: options.auth ?? ['PLAIN'],
     requireAuth: options.requireAuth === true,
+    rejectSender: options.rejectSender === true,
     rejectRecipients: options.rejectRecipients ?? [],
     failData: options.failData === true,
     user: options.user ?? 'user@example.com',
     pass: options.pass ?? 'secret',
   }
+  /** The exact rejection QQ Mail answers a bracket-less envelope path with. */
+  const BARE_PATH_REJECTION = '502 Invalid input from 127.0.0.1 to dsh-notify-long.test.'
   /** @type {any[]} */
   const received = []
   const server = createServer((socket) => {
@@ -109,15 +119,21 @@ export async function startSmtpServer(options = {}) {
           }
         }
         if (verb === 'MAIL') {
-          current = { from: line.slice(line.indexOf(':') + 1) }
-          if (state.requireAuth && !authenticated) send('530 5.7.0 authentication required')
+          const path = line.slice(line.indexOf(':') + 1).trim()
+          current = { from: bare(path), envelope: { mailFrom: path } }
+          if (!isBracketed(path)) send(BARE_PATH_REJECTION)
+          else if (state.rejectSender) send('502 5.5.2 sender rejected by policy')
+          else if (state.requireAuth && !authenticated) send('530 5.7.0 authentication required')
           else send('250 2.1.0 Ok')
           continue
         }
         if (verb === 'RCPT') {
-          const address = line.slice(line.indexOf(':') + 1)
+          const path = line.slice(line.indexOf(':') + 1).trim()
+          const address = bare(path)
           current.to = [...(current.to ?? []), address]
-          if (state.rejectRecipients.includes(address)) send('550 5.1.1 no such user')
+          current.envelope = { ...(current.envelope ?? {}), rcptTo: [...(current.envelope?.rcptTo ?? []), path] }
+          if (!isBracketed(path)) send(BARE_PATH_REJECTION)
+          else if (state.rejectRecipients.includes(address)) send('550 5.1.1 no such user')
           else send('250 2.1.5 Ok')
           continue
         }
@@ -140,6 +156,16 @@ export async function startSmtpServer(options = {}) {
     })
     socket.on('error', () => undefined)
   })
+
+  /** @param {string} path - the raw envelope argument @returns {boolean} whether it carries the required brackets */
+  function isBracketed(path) {
+    return /^<[^<>]*>$/.test(path)
+  }
+
+  /** @param {string} path - the raw envelope argument @returns {string} the bare address inside it */
+  function bare(path) {
+    return path.startsWith('<') && path.endsWith('>') ? path.slice(1, -1) : path
+  }
 
   /**
    * Validate one credential pair.

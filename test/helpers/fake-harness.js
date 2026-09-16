@@ -30,6 +30,31 @@ export function createFakeHarness(options = {}) {
   const disposers = []
   const logs = []
   const settingsSections = []
+  /** Waits registered by `ctx.inject` whose services have not appeared yet. */
+  const pendingInjects = []
+  let services = { ...(options.services ?? {}) }
+
+  /** Run every wait whose dependencies are now satisfied. */
+  function reconcileInjects() {
+    for (const record of [...pendingInjects]) {
+      if (!record.deps.every((name) => services[name] !== undefined)) continue
+      pendingInjects.splice(pendingInjects.indexOf(record), 1)
+      record.callback(serviceContext())
+    }
+  }
+
+  /**
+   * A context carrying the resolved services as properties, the way Cordis
+   * exposes them (`ctx.settings`, `ctx.agents`, …) on top of the accessors this
+   * fake already provides.
+   *
+   * @returns {any} the derived context
+   */
+  function serviceContext() {
+    const derived = Object.create(ctx)
+    for (const [name, service] of Object.entries(services)) derived[name] = service
+    return derived
+  }
 
   const ctx = {
     logger: {
@@ -37,7 +62,29 @@ export function createFakeHarness(options = {}) {
       warn: (format, ...args) => logs.push({ level: 'warn', message: `${format} ${args.join(' ')}`.trim() }),
     },
     get(name) {
-      return options.services?.[name]
+      return services[name]
+    },
+    /**
+     * Cordis's dependency wait: run the callback now when every service is
+     * already there, otherwise park it until `provide` supplies the last one.
+     * A plugin that reads a service once instead of waiting is exactly the bug
+     * this fake exists to catch.
+     *
+     * @param {string[]} deps - required service names
+     * @param {Function} callback - runs with a context once they all exist
+     * @returns {Function} cancels the wait
+     */
+    inject(deps, callback) {
+      if (deps.every((name) => services[name] !== undefined)) {
+        callback(serviceContext())
+        return () => {}
+      }
+      const record = { deps, callback }
+      pendingInjects.push(record)
+      return () => {
+        const index = pendingInjects.indexOf(record)
+        if (index >= 0) pendingInjects.splice(index, 1)
+      }
     },
     on(event, listener) {
       const list = listeners.get(event) ?? []
@@ -69,6 +116,21 @@ export function createFakeHarness(options = {}) {
     tools,
     logs,
     listeners,
+    /**
+     * Publish a service after mount, releasing any `ctx.inject` wait on it.
+     *
+     * @param {string} name - service name
+     * @param {any} service - the service instance
+     * @returns {void}
+     */
+    provide(name, service) {
+      services = { ...services, [name]: service }
+      reconcileInjects()
+    },
+    /** @returns {number} how many dependency waits are still parked */
+    pendingInjectCount() {
+      return pendingInjects.length
+    },
     /** @param {any} config - composition entry @returns {Promise<any>} the plugin module */
     async mount(config = {}) {
       const module = await import('../../src/index.js')
@@ -119,8 +181,7 @@ export function createFakeHarness(options = {}) {
  * @param {object} [options] - stub options
  * @param {any} [options.user] - initial user layer
  * @returns {any} the settings stub
- */
-export function createFakeSettings(options = {}) {
+ */export function createFakeSettings(options = {}) {
   let source = () => undefined
   let user = options.user
   let hooked
@@ -145,6 +206,61 @@ export function createFakeSettings(options = {}) {
     /** @returns {any} the raw hooks the plugin registered */
     hooks() {
       return hooked
+    },
+  }
+}
+
+/**
+ * A Connection stub that behaves like the host registry the settings card talks
+ * to: it records the exact Fetch routes a plugin publishes and lets a test post
+ * one endpoint the way the browser half does.
+ *
+ * The real service owns authentication and the HTTP carrier; both are outside
+ * this plugin's contract, so the stub keeps only the part that is: a route path,
+ * a decoded endpoint, and the JSON envelope the plugin answers with.
+ *
+ * @returns {any} the connection stub
+ */
+export function createFakeConnection() {
+  /** @type {Map<string, any>} */
+  const routes = new Map()
+  return {
+    fetch: {
+      /**
+       * Register one exact Fetch route, as `HostConnectionFetch.register` does.
+       *
+       * @param {any} route - the route object
+       * @returns {Function} the disposer
+       */
+      register(route) {
+        if (routes.has(route.path)) throw new Error(`duplicate route ${route.path}`)
+        routes.set(route.path, route)
+        return () => {
+          routes.delete(route.path)
+        }
+      },
+    },
+    /** @returns {string[]} the registered route paths */
+    paths() {
+      return [...routes.keys()]
+    },
+    /**
+     * Post one endpoint to a registered route, exactly as the card does.
+     *
+     * @param {string} endpoint - the endpoint name
+     * @param {any} payload - the JSON payload
+     * @returns {Promise<any>} the decoded response envelope
+     */
+    async call(endpoint, payload) {
+      const [path, route] = [...routes.entries()][0] ?? []
+      if (route === undefined) throw new Error('no settings-card route is registered')
+      const response = await route.fetch(new Request(`http://dsh.test${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ endpoint, payload: payload ?? {} }),
+      }))
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`)
+      return response.json()
     },
   }
 }

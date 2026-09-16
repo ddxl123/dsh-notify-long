@@ -2,100 +2,142 @@
 /**
  * Install dsh-notify-long into a dsh profile.
  *
- * The plugin has no build step and no runtime dependencies, so installing it is
- * two mechanical steps:
+ * This package declares `dsh.bundle.patch` in its package.json, so `dsh plugin`
+ * already knows how to install it: it runs pnpm in the profile directory and
+ * appends this package to `dsh.profile.bundles`, which is what makes the plugin
+ * row in `cordis.patch.yml` load. This script is therefore a thin wrapper for
+ * the one thing that command cannot do itself —
  *
- * 1. link this directory into `<profile>/node_modules/dsh-notify-long`, which is the
- *    anchor the Cordis loader imports bare package names from;
- * 2. insert the plugin row into `<profile>/cordis.patch.yml`, preserving any
- *    patch entries already there.
+ *   dsh plugin --profile web add /path/to/dsh-notify-long
+ *   node scripts/link-harness-deps.mjs
  *
- * Both steps are idempotent: re-running the script reports "already installed"
- * and changes nothing.
+ * — pnpm runs no lifecycle scripts for a local `link:` dependency, so the
+ * harness peers this package imports (`@deepseek-ai/schemastery` and
+ * `@deepseek-ai/dsh-tools`) are not established by the install. Without them the
+ * plugin still loads, but the composition row goes unvalidated and its tools use
+ * fallback definitions; linking them is what makes the install complete.
+ *
+ * Nothing here edits a profile file by hand. The row lives in this repository's
+ * `cordis.patch.yml` and reaches the profile as a bundle layer, so installing
+ * twice, or installing and then re-running this script, is a no-op.
  *
  * Usage:
- *   node scripts/install.mjs [--profile web] [--uninstall] [--dry-run]
+ *   node scripts/install.mjs [--profile web] [--uninstall] [--dry-run] [--dsh <path>]
  *
  * @module dsh-notify-long/scripts/install
  */
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { addPluginRow, removePluginRow } from '../lib/core/patch.js'
+import { linkHarnessDeps } from './link-harness-deps.mjs'
 
-const here = dirname(fileURLToPath(import.meta.url))
-const repo = resolve(here, '..')
+const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const pluginName = 'dsh-notify-long'
 
-/** @param {string[]} argv - process arguments @returns {Record<string, any>} parsed flags */
+/**
+ * Read and consume the value of a flag, rejecting a missing one.
+ *
+ * @param {string[]} argv - process arguments
+ * @param {number} index - the value's index (the flag's index plus one)
+ * @param {string} flag - the flag name, for the error message
+ * @returns {string} the value
+ */
+function valueAt(argv, index, flag) {
+  const value = argv[index]
+  if (value === undefined || value.startsWith('--')) throw new Error(`${flag} requires a value`)
+  return value
+}
+
+/**
+ * Parse the command line.
+ *
+ * @param {string[]} argv - process arguments
+ * @returns {{ profile: string, uninstall: boolean, dryRun: boolean, dsh: string, help: boolean }} parsed flags
+ */
 function parseArgs(argv) {
-  const options = { profile: 'web', uninstall: false, dryRun: false }
+  const options = { profile: 'web', uninstall: false, dryRun: false, dsh: process.env.DSH_BIN ?? 'dsh', help: false }
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
-    if (token === '--profile' || token === '-p') options.profile = argv[index += 1]
+    // `index += 1` both reads and consumes the value, so the loop's own
+    // increment lands past it rather than re-reading it as a flag.
+    if (token === '--profile' || token === '-p') options.profile = valueAt(argv, index += 1, token)
+    else if (token.startsWith('--profile=')) options.profile = token.slice('--profile='.length)
+    else if (token === '--dsh') options.dsh = valueAt(argv, index += 1, token)
+    else if (token.startsWith('--dsh=')) options.dsh = token.slice('--dsh='.length)
     else if (token === '--uninstall') options.uninstall = true
     else if (token === '--dry-run') options.dryRun = true
     else if (token === '--help' || token === '-h') options.help = true
-    else if (token.startsWith('--profile=')) options.profile = token.slice('--profile='.length)
     else throw new Error(`unknown argument: ${token}`)
   }
   return options
 }
 
-/** @param {string} name - profile name @returns {string} the profile directory */
-function profileDir(name) {
-  if (name === '' || name.includes('/') || name === '.' || name === '..') throw new Error(`invalid profile name: ${JSON.stringify(name)}`)
-  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
-  return join(home, 'profiles', name)
+/** @type {ReturnType<typeof parseArgs>} */
+let options
+try {
+  options = parseArgs(process.argv.slice(2))
+} catch (error) {
+  console.error(`dsh-notify-long: ${error.message}`)
+  console.error('dsh-notify-long: run with --help for usage')
+  process.exit(1)
 }
-
-const options = parseArgs(process.argv.slice(2))
 if (options.help) {
-  console.log(`Usage: node scripts/install.mjs [--profile web] [--uninstall] [--dry-run]
+  console.log(`Usage: node scripts/install.mjs [--profile web] [--uninstall] [--dry-run] [--dsh <path>]
 
   --profile, -p   dsh profile to install into (default: web)
-  --uninstall     remove the row and the node_modules link
-  --dry-run       print the planned changes without writing anything`)
+  --uninstall     remove the dependency, and with it the bundle layer
+  --dry-run       print the command that would run, without running it
+  --dsh           the dsh executable to use (default: $DSH_BIN, then "dsh")
+
+Equivalent, without this wrapper:
+  dsh plugin --profile ${options.profile} add ${repo}
+  node scripts/link-harness-deps.mjs`)
   process.exit(0)
 }
 
-const profile = profileDir(options.profile)
-if (!existsSync(profile)) {
-  console.error(`dsh-notify-long: profile directory ${profile} does not exist. Create it first with: dsh --profile ${options.profile} --dump-config`)
+if (options.profile === '' || options.profile.includes('/') || options.profile === '.' || options.profile === '..') {
+  console.error(`dsh-notify-long: invalid profile name: ${JSON.stringify(options.profile)}`)
   process.exit(1)
 }
 
-const link = join(profile, 'node_modules', pluginName)
-const patch = join(profile, 'cordis.patch.yml')
-const actions = []
+const args = ['plugin', '--profile', options.profile, options.uninstall ? 'remove' : 'add', options.uninstall ? pluginName : repo]
+
+if (options.dryRun) {
+  console.log(`${options.dsh} ${args.join(' ')}`)
+  if (!options.uninstall) console.log('node scripts/link-harness-deps.mjs')
+  console.log('\ndry run: nothing was written')
+  process.exit(0)
+}
+
+const result = spawnSync(options.dsh, args, { stdio: 'inherit', shell: process.platform === 'win32' })
+if (result.error !== undefined) {
+  const hint = result.error.code === 'ENOENT'
+    ? `${options.dsh} not found on PATH — pass --dsh <path>, or run the equivalent by hand:\n  dsh plugin --profile ${options.profile} ${options.uninstall ? 'remove ' + pluginName : 'add ' + repo}`
+    : String(result.error)
+  console.error(`dsh-notify-long: could not run ${options.dsh}: ${hint}`)
+  process.exit(1)
+}
+if ((result.status ?? 1) !== 0) process.exit(result.status ?? 1)
 
 if (options.uninstall) {
-  if (lstatSync(link, { throwIfNoEntry: false }) !== undefined) actions.push(`remove link ${link}`)
-  const current = existsSync(patch) ? readFileSync(patch, 'utf8') : ''
-  if (current !== '' && removePluginRow(current, pluginName) !== current) actions.push(`remove the ${pluginName} row from ${patch}`)
-  if (!options.dryRun) {
-    rmSync(link, { force: true })
-    if (current !== '') writeFileSync(patch, removePluginRow(current, pluginName))
-  }
-} else {
-  const linkExists = lstatSync(link, { throwIfNoEntry: false }) !== undefined
-  if (!linkExists) actions.push(`link ${repo} → ${link}`)
-  const current = existsSync(patch) ? readFileSync(patch, 'utf8') : '[]\n'
-  const next = addPluginRow(current, pluginName)
-  if (next !== current) actions.push(`add the ${pluginName} row to ${patch}`)
-  if (!options.dryRun) {
-    mkdirSync(dirname(link), { recursive: true })
-    if (!linkExists) symlinkSync(repo, link, 'dir')
-    writeFileSync(patch, next)
-  }
+  console.log(`\ndsh-notify-long is no longer a dependency of profile "${options.profile}"; restart it to unload the plugin.`)
+  process.exit(0)
 }
 
-if (actions.length === 0) {
-  console.log(`dsh-notify-long is already ${options.uninstall ? 'absent' : 'installed'} in profile "${options.profile}" (${profile})`)
+// Only meaningful for a `link:` install, where pnpm runs no lifecycle scripts.
+// For a git or npm install the package's own `prepare` already did this, and the
+// script reports "already resolvable" and changes nothing.
+const peers = await linkHarnessDeps()
+if (peers.linked.length === 0 && peers.missing.length === 0) {
+  console.log('\nharness peers already resolvable.')
+} else if (peers.from === undefined) {
+  console.error(`\ndsh-notify-long: could not find a dsh installation providing: ${peers.missing.join(', ')}`)
+  console.error('dsh-notify-long: the plugin will load without config validation and with fallback tool definitions.')
+  console.error('dsh-notify-long: fix it with: node scripts/link-harness-deps.mjs --from /path/to/node_modules')
 } else {
-  for (const action of actions) console.log(`${options.dryRun ? 'would ' : ''}${action}`)
-  console.log(options.dryRun ? '\ndry run: nothing was written' : `\nRestart the profile to load the plugin:  dsh --profile ${options.profile}`)
+  console.log(`\nlinked harness peers from ${peers.from}: ${peers.linked.join(', ')}`)
 }
+
+console.log(`\nRestart the profile to load the plugin:  ${options.dsh} --profile ${options.profile}`)

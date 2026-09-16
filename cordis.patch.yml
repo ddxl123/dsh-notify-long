@@ -1,0 +1,45 @@
+# The dsh-notify-long bundle patch.
+#
+# This file is how the plugin is installed. A dsh profile composes its plugin
+# tree as ordered layers — every package listed in `dsh.profile.bundles`
+# contributes the `dsh.bundle.patch` its own package.json names, then the
+# profile's `cordis.patch.yml`, then any `--patch` overlay. This package
+# declares itself a bundle, so installing it is one command:
+#
+#   dsh plugin --profile web add /absolute/path/to/dsh-notify-long
+#
+# `dsh plugin` runs pnpm in the profile and then appends `dsh-notify-long` to
+# `dsh.profile.bundles`, which is what makes this layer load. Removing the
+# dependency removes the layer again:
+#
+#   dsh plugin --profile web remove dsh-notify-long
+#
+# The row is host-plane, not preset-plane. One instance watches every agent in
+# the process, so an event is alerted once rather than once per mounted session,
+# and the durable outbox, its dedupe window and its cooldowns are shared. The
+# same row in an agent preset would give every session its own copy, its own
+# outbox and its own copy of every alert.
+#
+# Every value below is overridable from a later layer (`$DSH_HOME/cordis.patch.yml`
+# or a `--patch` overlay); a patch replaces a row's whole `config`, so restate
+# every key you need. Anything omitted falls back to the plugin's documented
+# default. Day-to-day changes belong in the live `dsh-notify-long:` section of
+# `$DSH_HOME/settings.yaml` instead, which applies on save without a restart.
+
+- insert:
+    - id: dsh-notify-long
+      name: 'dsh-notify-long'
+      config:
+        enabled: true
+        alerts:
+          # All three are attempted; a channel that cannot run reports itself
+          # inactive instead of failing the alert. Email stays quiet until
+          # credentials exist, so this default is not "email on".
+          channels: [sound, desktop, email]
+          kinds:
+            # Child agents are chatty: a subagent settling is not a finished
+            # task unless you opt in.
+            subagent: { enabled: false }
+        # SMTP credentials come from the environment (`DSH_SMTP_PASSWORD`) and
+        # provider settings from `$DSH_HOME/settings.yaml` — never from this
+        # file, which is meant to be committed.

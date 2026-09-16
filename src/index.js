@@ -16,14 +16,17 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { deepMerge, describeError, sanitizeLine } from '../lib/util.js'
-import { Guard } from '../lib/core/policy.js'
+import { activeChannels, Guard } from '../lib/core/policy.js'
+import { ActivityLog } from '../lib/core/activity.js'
 import { Outbox } from '../lib/core/queue.js'
 import { Engine } from '../lib/core/engine.js'
 import { Tracker } from '../lib/core/detect.js'
-import { planSoundCommand, playSound, resolveSoundFile } from '../lib/channels/sound.js'
+import { playSound } from '../lib/channels/sound.js'
 import { showDesktop } from '../lib/channels/desktop.js'
 import { describeEmail, emailReady, sendEmail } from '../lib/channels/email.js'
 import { createRuntime } from '../lib/runtime/handlers.js'
+import { API_PATH, createNotifyRoute } from '../lib/runtime/api.js'
+import { runSelfTest } from '../lib/runtime/selftest.js'
 
 /** Cordis plugin name shown in loader diagnostics. */
 export const name = 'dsh-notify-long'
@@ -110,6 +113,10 @@ function buildConfigSchema(z) {
   const channel = z.union(['sound', 'desktop', 'email'])
   return z.object({
     enabled: z.boolean().default(true),
+    // The language of every alert a human reads. `auto` follows the operating
+    // system (Intl / LANG); an unset value means English, so a library caller
+    // never gets machine-dependent output.
+    language: z.union(['auto', 'en', 'zh']).default('auto'),
     sound: z.object({
       enabled: z.boolean().default(true),
       file: z.string(),
@@ -183,6 +190,7 @@ function buildConfigSchema(z) {
 export function defaultsFor(value) {
   return deepMerge({
     enabled: true,
+    language: 'auto',
     sound: { enabled: true, perKind: {}, timeoutMs: 10_000 },
     desktop: { enabled: true },
     email: {
@@ -239,33 +247,57 @@ export function stateDirectory(ctx) {
 export function apply(ctx, rawConfig) {
   const entry = defaultsFor(rawConfig)
   const debug = entry.debug === true
-  const log = createLogger(ctx, entry, debug)
-  const settings = ctx.get('settings')
+
+  const stateDir = stateDirectory(ctx)
+  try {
+    mkdirSync(stateDir, { recursive: true })
+  } catch (error) {
+    console.warn(`[dsh-notify-long] could not create the state directory ${stateDir} (${describeError(error)})`)
+  }
+
+  // The activity log is created before the logger because the logger mirrors
+  // every line into it; its own persistence errors therefore go to the console
+  // through `log.raw`, which never re-enters the log and cannot recurse.
+  const activity = new ActivityLog({
+    path: join(stateDir, 'activity.json'),
+    onError: (message) => { console.warn(`[dsh-notify-long] ${message}`) },
+  })
+  const restoredActivity = activity.load()
+  const log = createLogger(ctx, entry, debug, activity)
+  activity.onError = (message) => { log.raw('warn', message) }
 
   /** @type {() => any} */
   let source = () => entry
   const engineHolder = { current: undefined }
-  if (settings !== undefined) {
+  // Wait for the settings service instead of reading it once. `dsh-settings-file`
+  // finishes its own async init after this plugin activates, so a one-shot
+  // `ctx.get('settings')` returns undefined here — silently, and the section
+  // would never be attached (no namespace served, so the browser card in
+  // Settings → Plugins renders nothing). `ctx.inject` runs the callback when the
+  // service appears, which is the pattern every in-box plugin uses; the plugin
+  // still works without it, on the composition entry alone.
+  ctx.inject(['settings'], (settingsCtx) => {
+    // `onChange` also fires when the section attaches, and a "settings changed"
+    // line at every boot would be noise in the card's log; only a later change
+    // is news.
+    let announced = false
     try {
-      settings.installSection(ctx, 'dsh-notify-long', Config, entry, {
+      settingsCtx.settings.installSection(ctx, 'dsh-notify-long', Config, entry, {
         setSource: (current) => { source = current },
         onChange: () => {
-          log.debug('notification settings changed')
+          if (announced) {
+            log.debug('notification settings changed')
+            activity.append({ level: 'info', event: 'settings', message: 'notification settings changed' })
+          }
+          announced = true
           engineHolder.current?.guard.reset()
         },
       })
     } catch (error) {
       log.warn(`could not attach the settings section; using the composition entry only (${describeError(error)})`)
     }
-  }
+  })
   const settingsNow = () => source() ?? entry
-
-  const stateDir = stateDirectory(ctx)
-  try {
-    mkdirSync(stateDir, { recursive: true })
-  } catch (error) {
-    log.warn(`could not create the state directory ${stateDir} (${describeError(error)})`)
-  }
 
   const outbox = new Outbox({
     path: sanitizeLine(settingsNow().outbox?.path ?? '') || join(stateDir, 'outbox.json'),
@@ -281,6 +313,7 @@ export function apply(ctx, rawConfig) {
     outbox,
     guard,
     settings: settingsNow,
+    activity,
     emailReady: emailConfigured,
     playSound: (input) => (settingsNow().sound?.enabled === false
       ? Promise.resolve({ ok: false, detail: 'sound is disabled in settings' })
@@ -291,7 +324,10 @@ export function apply(ctx, rawConfig) {
     sendEmail: (input) => (settingsNow().email?.enabled === false
       ? Promise.resolve({ ok: false, detail: 'email is disabled in settings' })
       : sendEmail(input)),
-    log: (message) => log.warn(message),
+    // The engine already writes a structured activity entry for every outcome,
+    // so its free-form lines stay in the harness console instead of doubling up
+    // in the card's log.
+    log: (message) => log.raw('warn', message),
   })
   engineHolder.current = engine
 
@@ -300,9 +336,41 @@ export function apply(ctx, rawConfig) {
     tracker,
     engine,
     settings: settingsNow,
-    log: (message) => log.warn(message),
+    log: (message) => log.raw('warn', message),
   })
   ctx.on('dispose', () => runtime.dispose())
+
+  // The settings card's live half: status, activity log, test alert and outbox
+  // retry over one exact Fetch route on Connection's `/api` channel. `connection`
+  // is optional — a headless deployment has no browser to serve, and the card is
+  // simply configuration only there — so it is waited for rather than declared
+  // as a hard dependency.
+  //
+  // The route is registered through `connection.fetch` rather than
+  // `connection.rpc.handle`, for the reason spelled out in lib/runtime/api.js:
+  // the RPC registry mounts a channel with the *provider's* fiber, where
+  // `webServer` is not visible, so `handle()` throws `cannot get property
+  // "webServer" without inject` from any consumer plugin. The exact Fetch
+  // registry adds the route to a channel Connection already mounted.
+  const route = createNotifyRoute({
+    activity,
+    outbox,
+    engine,
+    settings: settingsNow,
+    emailReady: emailConfigured,
+    log: (message) => log.warn(message),
+  })
+  ctx.inject(['connection'], (connectionCtx) => {
+    try {
+      connectionCtx.effect(
+        () => connectionCtx.connection.fetch.register(route),
+        'dsh-notify-long: settings-card route',
+      )
+      log.debug(`settings-card endpoint published on ${API_PATH}`)
+    } catch (error) {
+      log.warn(`could not publish the settings-card endpoint; the card will show configuration only (${describeError(error)})`)
+    }
+  })
 
   // Each subscription group is guarded independently: if one harness event
   // disappears in a future release, only that capability goes quiet instead of
@@ -391,11 +459,16 @@ export function apply(ctx, rawConfig) {
   })
 
   if (entry.tools?.enabled !== false) {
-    registerTools(ctx, { engine, tracker, outbox, settingsNow, emailConfigured, log })
+    registerTools(ctx, { engine, tracker, outbox, activity, settingsNow, emailConfigured, log })
   }
 
   const restored = outbox.load()
   log.debug(`state directory ${stateDir}; ${restored.loaded} queued alert(s) restored, ${restored.dropped} stale record(s) dropped`)
+  activity.append({
+    level: 'info',
+    event: 'start',
+    message: `dsh-notify-long started: ${restored.loaded} queued alert(s) restored, ${restoredActivity.loaded} log entr(ies) kept`,
+  })
   if (outbox.size > 0) {
     engine.drain().then((summary) => {
       if (summary.delivered > 0 || summary.failed > 0) {
@@ -584,39 +657,21 @@ function defineTestTool(deps) {
     async execute(args) {
       const settings = settingsNow()
       const requested = args?.channel ?? 'all'
-      const results = { sound: 'not requested', desktop: 'not requested', email: 'not requested' }
-      const at = Date.now()
-      const title = 'dsh-notify-long test alert'
-      const body = `Verification requested at ${new Date(at).toLocaleString()}.`
-
-      if (requested === 'all' || requested === 'sound') {
-        const configuredSound = settings.sound?.perKind?.test ?? settings.sound?.file
-        const file = resolveSoundFile({ kind: 'test', sound: configuredSound })
-        if (settings.sound?.enabled === false) results.sound = 'disabled in settings'
-        else if (planSoundCommand({ file, player: settings.sound?.player }) === undefined) results.sound = 'no usable player or sound file on this machine'
-        else {
-          const outcome = await engine.playSound({ file, kind: 'test', player: settings.sound?.player, timeoutMs: settings.sound?.timeoutMs })
-          results.sound = outcome.ok ? `played (${outcome.detail})` : `failed: ${outcome.detail}`
-        }
-      }
-      if (requested === 'all' || requested === 'desktop') {
-        const outcome = settings.desktop?.enabled === false
-          ? { ok: false, detail: 'disabled in settings' }
-          : await engine.showDesktop({ title, body, kind: 'test', sound: settings.desktop?.sound })
-        results.desktop = outcome.ok ? `shown (${outcome.detail})` : `failed: ${outcome.detail}`
-      }
-      if (requested === 'all' || requested === 'email') {
-        const outcome = settings.email?.enabled === false
-          ? { ok: false, detail: 'disabled in settings' }
-          : await engine.sendEmail({ event: { kind: 'test', title, body, at, urgency: 'info' }, settings })
-        results.email = outcome.ok ? `sent (${outcome.detail})` : `failed: ${outcome.detail}`
-        if (!emailConfigured()) {
-          results.email = settings.email?.enabled === false ? results.email : 'not configured: set email.host, email.from and email.to'
-        }
-      }
-      const ok = Object.values(results).some((entry) => /^(played|shown|sent)/.test(entry))
+      const results = await runSelfTest({
+        engine,
+        settings,
+        emailReady: emailConfigured() === true,
+        channel: requested,
+      })
+      const lines = ['sound', 'desktop', 'email']
+        .filter((channel) => results[channel] !== 'not requested')
+        .map((channel) => `${channel}: ${results[channel]}`)
+      deps.activity?.append({
+        level: results.ok ? 'info' : 'warn',
+        event: 'test',
+        message: `test alert (${requested}) — ${lines.join('; ') || 'nothing requested'}`,
+      })
       return {
-        ok,
         ...results,
         ...outbox.size === 0 ? {} : { note: `${outbox.size} alert(s) are still queued for delivery` },
       }
@@ -631,10 +686,10 @@ function defineTestTool(deps) {
  * @returns {any} the tool definition
  */
 function defineStatusTool(deps) {
-  const { engine, settingsNow, outbox } = deps
+  const { engine, settingsNow, outbox, activity } = deps
   return defineHarnessTool({
     name: 'notify_status',
-    description: 'Report the operator notification setup: which channels are active, whether email is configured, quiet hours, and how many alerts are queued. Secrets are never included.',
+    description: 'Report the operator notification setup: which channels are active, whether email is configured, quiet hours, how many alerts are queued, and the most recent delivery results. Secrets are never included.',
     parameters: {},
     output: {
       schema: {
@@ -649,6 +704,7 @@ function defineStatusTool(deps) {
           failed: { type: 'integer', required: true },
           email: { type: 'string', required: true },
           lastFailure: { type: 'string' },
+          recent: { type: 'array', items: { type: 'string' } },
         },
       },
       render: (_args, value) => [{
@@ -659,6 +715,7 @@ function defineStatusTool(deps) {
           `quiet hours: ${value.quiet}`,
           `queued: ${value.queued}; delivered this run: ${value.delivered}; failed: ${value.failed}`,
           ...value.lastFailure === undefined ? [] : [`last failure: ${value.lastFailure}`],
+          ...value.recent === undefined ? [] : ['recent activity:', ...value.recent.map((line) => `  ${line}`)],
         ].join('\n'),
       }],
     },
@@ -666,23 +723,19 @@ function defineStatusTool(deps) {
       const settings = settingsNow()
       const status = engine.status()
       const email = describeEmail(settings)
+      const recent = activity?.entries({ limit: 5 }).map((entry) => `${new Date(entry.at).toLocaleString()} ${entry.level}: ${entry.message}`) ?? []
       return {
         enabled: status.enabled,
-        channels: (settings.alerts?.channels ?? []).filter((channel) => {
-          if (channel === 'sound') return settings.sound?.enabled !== false
-          if (channel === 'desktop') return settings.desktop?.enabled !== false
-          return email.ready
-        }),
+        channels: activeChannels(settings, email.ready),
         quiet: status.quiet.configured
           ? `${status.quiet.range[0]}–${status.quiet.range[1]}${status.quiet.active ? ' (active now: sound and desktop muted, email still sent)' : ''}`
           : 'not configured',
         queued: outbox.size,
         delivered: status.delivered,
         failed: status.failed,
-        email: email.ready
-          ? `ready via ${email.host}:${email.port} as ${email.user || email.from} → ${email.to.join(', ')} (secret: ${email.secretSource})`
-          : 'not configured: set email.host, email.from and email.to',
+        email: email.summary,
         ...status.lastFailure === undefined ? {} : { lastFailure: status.lastFailure },
+        ...recent.length === 0 ? {} : { recent },
       }
     },
   })
@@ -728,28 +781,45 @@ function defineFlushTool(deps) {
 /**
  * Build the plugin logger.
  *
+ * Every line this logger emits is mirrored into the activity log, so the log
+ * panel in Settings → Plugins shows what the harness console shows. `raw` is the
+ * escape hatch: it writes to the console only, for callers that already recorded
+ * a structured entry (the engine) or that are reporting a failure *of* the
+ * activity log itself — mirroring those would double up, or recurse.
+ *
  * @param {any} ctx - the plugin context
  * @param {any} config - the composition entry
  * @param {boolean} debug - whether debug logging is on
- * @returns {{ info: Function, warn: Function, debug: Function }} the logger
+ * @param {any} [activity] - the activity log to mirror into
+ * @returns {{ info: Function, warn: Function, error: Function, debug: Function, raw: Function }} the logger
  */
-function createLogger(ctx, config, debug) {
+function createLogger(ctx, config, debug, activity) {
   const logger = ctx.logger ?? ctx.get?.('logger')
   const quiet = config.log?.delivered === false
-  const emit = (level, message) => {
-    if (quiet && level === 'info') return
+  const write = (level, message) => {
     try {
       if (logger !== undefined && typeof logger[level] === 'function') logger[level]('[dsh-notify-long] %s', message)
-      else if (level === 'warn') console.warn(`[dsh-notify-long] ${message}`)
+      else if (level === 'warn' || level === 'error') console.warn(`[dsh-notify-long] ${message}`)
       else console.log(`[dsh-notify-long] ${message}`)
     } catch {
       // Logging must never be the reason an alert fails.
     }
   }
+  const emit = (level, message) => {
+    if (quiet && level === 'info') return
+    write(level, message)
+    try {
+      activity?.log(level, message)
+    } catch {
+      // The activity log is a convenience; the console line already landed.
+    }
+  }
   return {
     info: (message) => emit('info', message),
     warn: (message) => emit('warn', message),
+    error: (message) => emit('error', message),
     debug: (message) => { if (debug) emit('info', message) },
+    raw: (level, message) => write(level, message),
   }
 }
 

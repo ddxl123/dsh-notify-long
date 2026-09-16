@@ -8,18 +8,19 @@
  *
  * Usage:
  *   node scripts/test-alert.mjs [--kind completed|question|error|test] [--channel all|sound|desktop|email]
- *                              [--title "..."] [--message "..."] [--json]
+ *                              [--title "..."] [--message "..."] [--json] [--trace]
  *
  * Configuration comes from the same layers the plugin uses: the environment
  * (DSH_SMTP_PASSWORD), plus optional JSON at $DSH_HOME/dsh-notify-long/config.json.
  * The file is a flat object shaped like the plugin's own settings section:
  *
- *   { "email": { "preset": "qq", "user": "me@qq.com",
- *                "from": "me@qq.com", "to": ["me@qq.com"] } }
+ *   { "email": { "user": "me@qq.com", "pass": "authorization-code" } }
  *
- * `preset` accepts qq, qq-exmail, 163, 163-enterprise, aliyun, gmail, outlook,
- * office365, icloud, zoho, yahoo, sendgrid, mailgun, resend or brevo, and fills
- * in host/port/transport for that provider.
+ * A QQ account (or a bare QQ number) selects the qq preset on its own, and
+ * `from` / `to` then default to that account, so the object above is a complete
+ * configuration. `preset` also accepts qq-exmail, 163, 163-enterprise, aliyun,
+ * gmail, outlook, office365, icloud, zoho, yahoo, sendgrid, mailgun, resend or
+ * brevo, and fills in host/port/transport for that provider.
  *
  * @module dsh-notify-long/scripts/test-alert
  */
@@ -36,7 +37,7 @@ import { deepMerge, sanitizeLine } from '../lib/util.js'
 
 /** @param {string[]} argv - process arguments @returns {Record<string, any>} parsed flags */
 function parseArgs(argv) {
-  const options = { kind: 'test', channel: 'all', title: 'dsh-notify-long test alert', message: 'Manual verification from the command line.', json: false }
+  const options = { kind: 'test', channel: 'all', title: 'dsh-notify-long test alert', message: 'Manual verification from the command line.', json: false, trace: false }
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (token === '--kind') options.kind = argv[index += 1]
@@ -44,6 +45,7 @@ function parseArgs(argv) {
     else if (token === '--title') options.title = argv[index += 1]
     else if (token === '--message') options.message = argv[index += 1]
     else if (token === '--json') options.json = true
+    else if (token === '--trace') options.trace = true
     else if (token === '--help' || token === '-h') options.help = true
     else throw new Error(`unknown argument: ${token}`)
   }
@@ -94,10 +96,21 @@ if (options.channel === 'all' || options.channel === 'desktop') {
 }
 
 if (options.channel === 'all' || options.channel === 'email') {
-  if (!emailReady(settings)) results.email = `not configured: ${describeEmail(settings).host === '' ? 'set email.host, email.from and email.to' : 'set email.from and email.to'}`
+  if (!emailReady(settings)) results.email = `not configured: ${describeEmail(settings).host === '' ? 'set a QQ mailbox address (or email.host), a sender and a recipient' : 'set email.from and email.to'}`
   else {
-    const outcome = await sendEmail({ event: { kind: options.kind, title: options.title, body: options.message, at, urgency: 'info' }, settings })
+    const outcome = await sendEmail({
+      event: { kind: options.kind, title: options.title, body: options.message, at, urgency: 'info' },
+      settings,
+      trace: options.trace,
+    })
     results.email = outcome.ok ? `sent (${outcome.detail})` : `failed: ${outcome.detail}`
+    // `--trace` prints the conversation itself: "the server rejected the sender"
+    // is only actionable next to the exact command it rejected.
+    if (options.trace && Array.isArray(outcome.transcript)) {
+      console.log('--- SMTP conversation (credentials redacted) ---')
+      for (const line of outcome.transcript) console.log(line)
+      console.log('--- end ---')
+    }
   }
 }
 

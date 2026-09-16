@@ -1,12 +1,26 @@
-# The row this plugin adds to a profile's patch layer.
-# `node scripts/install.mjs --profile web` writes exactly this (idempotently).
+# Example: overriding this plugin's row from a profile patch layer.
+#
+# The row itself ships with the package — `cordis.patch.yml` at the repository
+# root is the bundle patch `dsh plugin --profile web add <this package>` puts on
+# the profile's layer stack. Put a patch like this one in
+# `~/.dsh/profiles/web/cordis.patch.yml` (or `$DSH_HOME/cordis.patch.yml`) to
+# override it there; a later layer replaces the row's whole `config`, so restate
+# every key you need on top of what the bundle patch set.
+#
+# Day-to-day changes do not belong here: the live `dsh-notify-long:` section of
+# `~/.dsh/settings.yaml` applies on save, without a restart. Reach for a patch
+# layer only for what must hold before the settings document is read — turning
+# the plugin off in one profile, or pinning a state directory.
 
-- insert:
-    - id: dsh-notify-long
-      name: dsh-notify-long
-      config:
-        enabled: true
-        alerts:
-          channels: [sound, desktop, email]
-          kinds:
-            subagent: { enabled: false }
+- id: dsh-notify-long
+  config:
+    enabled: true
+    alerts:
+      channels: [sound, desktop, email]
+      kinds:
+        subagent: { enabled: false }
+      # Quieter than the default 5 minutes: one alert per distinct event.
+      dedupeWindowMs: 60_000
+    # Keep this profile's outbox separate from the default profile's.
+    outbox:
+      path: ~/.dsh/dsh-notify-long/web-outbox.json

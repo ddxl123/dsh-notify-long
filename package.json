@@ -28,13 +28,18 @@
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
+    "./client": "./client/index.js",
     "./lib/*": "./lib/*",
+    "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "src",
+    "client",
     "lib",
     "examples",
+    "scripts",
+    "cordis.patch.yml",
     "README.md",
     "README.zh.md",
     "LICENSE"
@@ -44,16 +49,19 @@
   },
   "scripts": {
     "test": "node --test test/",
-    "test:setup": "node scripts/test-setup.mjs",
+    "test:setup": "node scripts/link-harness-deps.mjs",
     "test:alert": "node scripts/test-alert.mjs",
     "install:profile": "node scripts/install.mjs",
-    "check": "node --check src/index.js && node --test test/"
+    "link-deps": "node scripts/link-harness-deps.mjs",
+    "prepare": "node scripts/link-harness-deps.mjs",
+    "check": "node --check src/index.js && node --check client/index.js && node --test test/"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/dsh-settings": "^0.1.5-rc.1",
     "@deepseek-ai/dsh-tools": "^0.1.5-rc.1",
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@deepseek-ai/dsh-client-connection": "^0.1.5-rc.1"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
@@ -67,9 +75,22 @@
     },
     "@deepseek-ai/schemastery": {
       "optional": true
+    },
+    "@deepseek-ai/dsh-client-connection": {
+      "optional": true
     }
   },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    },
     "plugin": {
       "title": "Desktop & email notifications",
       "summary": "Alerts you on system sound, desktop notification and email when an agent finishes, fails, or asks a question."

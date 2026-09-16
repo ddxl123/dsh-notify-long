@@ -1,16 +1,24 @@
-# Minimal QQ Mail setup (also works for 163 / Gmail / Outlook — change `preset`).
+# Minimal QQ Mail setup — three lines, because everything else is derived.
 #
-# 1. Enable SMTP in your mailbox settings and generate an "authorization code"
-#    (QQ/163 reject your account password).
-# 2. Put the code in the environment, not in this file:
+# 1. Enable the IMAP/SMTP service in QQ Mail (设置 → 账户 → IMAP/SMTP 服务) and
+#    generate a 16-character "authorization code". QQ rejects your login
+#    password.
+# 2. Put the code in the environment rather than in this file:
 #        export DSH_SMTP_PASSWORD='your-authorization-code'
 # 3. Merge this section into ~/.dsh/settings.yaml and save; it applies live.
+#
+# What the host infers from `user` alone: the qq preset (smtp.qq.com:465,
+# implicit TLS), `from` = the account, and `to` = the account when no recipient
+# is listed. A bare QQ number works too — it is expanded to <number>@qq.com.
+#
+# Another provider still works; name it explicitly and set what it needs:
+#        preset: gmail
+#        user: you@gmail.com
+#        from: "DSH <you@gmail.com>"
+#        to: [you@gmail.com]
 
 dsh-notify-long:
   email:
     enabled: true
-    preset: qq
-    user: you@qq.com
-    from: "DSH <you@qq.com>"
-    to:
-      - you@qq.com
+    user: 1033839760@qq.com
+    # to: [you@example.com]     # optional: empty means "mail the account above"

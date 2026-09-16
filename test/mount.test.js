@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { createFakeHarness, createFakeSettings } from './helpers/fake-harness.js'
+import { createFakeConnection, createFakeHarness, createFakeSettings } from './helpers/fake-harness.js'
 import { Engine } from '../lib/core/engine.js'
 import { Guard } from '../lib/core/policy.js'
 import { Outbox } from '../lib/core/queue.js'
@@ -94,6 +94,87 @@ bootTests('apply() mounts against the real peer packages and registers its tools
   assert.equal(existsSync(join(home, 'dsh-notify-long')), true)
 })
 
+bootTests('the settings section attaches when the service arrives after apply', async () => {
+  process.env.DSH_HOME = tempDir('dsh-notify-long-home')
+  // The real `dsh-settings-file` finishes its own async init after this plugin
+  // activates, so the service is genuinely absent at apply time. Reading it once
+  // with `ctx.get('settings')` therefore silently registered nothing — no
+  // namespace served, and the Settings → Plugins card rendered nothing.
+  const harness = createFakeHarness()
+  await harness.mount({ email: { enabled: false }, sound: { enabled: false }, desktop: { enabled: false } })
+  // Two waits are parked: one for `settings` (the namespace and the card) and
+  // one for `connection` (the card's live log route). Neither is a hard
+  // dependency, so a headless deployment still activates.
+  assert.equal(harness.pendingInjectCount(), 2, 'the plugin must wait for settings and connection rather than read them once')
+  assert.deepEqual(harness.toolNames().sort(), ['notify_flush', 'notify_status', 'notify_test', 'notify_user'])
+
+  const settings = createFakeSettings()
+  harness.provide('settings', settings)
+  assert.equal(harness.pendingInjectCount(), 1)
+  assert.notEqual(settings.hooks(), undefined, 'the section must attach once the service appears')
+  assert.equal(settings.get().email.enabled, false, 'the composition entry is the section base')
+})
+
+bootTests('the settings card route is published on the connection channel', async () => {
+  const home = tempDir('dsh-notify-long-home')
+  process.env.DSH_HOME = home
+  const connection = createFakeConnection()
+  const harness = createFakeHarness({ services: { settings: createFakeSettings(), connection } })
+  await harness.mount({ sound: { enabled: false }, desktop: { enabled: false }, email: { enabled: false } })
+
+  assert.deepEqual(connection.paths(), ['/api/dsh-notify-long'], 'one exact route below the channel Connection mounts')
+  // A finished turn is alerted through the real wiring; every channel is
+  // switched off, so the alert is attempted, reported and queued.
+  const session = { id: 'session-rpc', header: { cwd: '/tmp/project' } }
+  await harness.emit('session/created', session)
+  await harness.emit('api-session/status', 'session-rpc', true)
+  await harness.emit('session/event', session, { type: 'turn/start', data: { turn: 1 } })
+  await harness.emit('session/event', session, {
+    type: 'user/message',
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'ship it' }] },
+  })
+  await harness.emit('session/event', session, {
+    type: 'tool/result',
+    data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'ok' }] } },
+  })
+  await harness.emit('session/event', session, {
+    type: 'assistant/message',
+    data: { message: { content: [{ type: 'text', text: 'shipped' }] } },
+  })
+  await harness.emit('session/event', session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  await harness.emit('api-session/status', 'session-rpc', false)
+  await sleep(500)
+
+  const snapshot = await connection.call('snapshot', { limit: 20 })
+  assert.equal(snapshot.ok, true)
+  assert.equal(snapshot.value.status.enabled, true)
+  assert.equal(snapshot.value.status.email.ready, false, 'no mailbox is configured in this test')
+  assert.equal(snapshot.value.status.queued, 1, 'the alert every channel refused is queued for a retry')
+  assert.ok(snapshot.value.entries.some((entry) => entry.event === 'queued'), 'the retry is visible in the activity log')
+  assert.ok(snapshot.value.entries.some((entry) => entry.event === 'start'), 'the start line is kept too')
+  assert.equal(existsSync(join(home, 'dsh-notify-long', 'activity.json')), true, 'the log is durable')
+
+  const status = await harness.tool('notify_status').execute({}, {})
+  assert.ok(Array.isArray(status.recent), 'notify_status carries the newest activity lines')
+  assert.match(status.recent.join('\n'), /retrying a completed alert/)
+
+  const cleared = await connection.call('clear', {})
+  assert.deepEqual(cleared.value, { cleared: snapshot.value.entries.length })
+  assert.equal((await connection.call('snapshot', {})).value.entries.length, 0)
+  assert.equal((await harness.tool('notify_status').execute({}, {})).recent, undefined, 'an empty log reports no recent lines')
+})
+
+bootTests('a plugin log line reaches the activity log the card reads', async () => {
+  const home = tempDir('dsh-notify-long-home')
+  process.env.DSH_HOME = home
+  const connection = createFakeConnection()
+  const harness = createFakeHarness({ services: { settings: createFakeSettings(), connection } })
+  await harness.mount({ sound: { enabled: false }, desktop: { enabled: false }, email: { enabled: false }, debug: true })
+
+  const snapshot = await connection.call('snapshot', {})
+  assert.ok(snapshot.value.entries.some((entry) => entry.event === 'log' && entry.message.includes('state directory')), snapshot.value.entries.map((entry) => entry.message).join('\n'))
+})
+
 bootTests('a finished turn produces a completion alert through the real wiring', async () => {
   const home = tempDir('dsh-notify-long-home')
   process.env.DSH_HOME = home
@@ -129,20 +210,23 @@ bootTests('a finished turn produces a completion alert through the real wiring',
   // The idle assessment is deferred by design; wait it out.
   await sleep(500)
 
-  // Nothing is left behind: the alert was attempted through the real wiring and
-  // removed once every channel reported its failure.
+  // The alert reached the durable outbox: every channel is switched off, so the
+  // completion alert is attempted, every channel refuses it, and it is held for
+  // a later retry rather than lost.
   const outboxPath = join(home, 'dsh-notify-long', 'outbox.json')
-  if (existsSync(outboxPath)) {
-    const outbox = JSON.parse(readFileSync(outboxPath, 'utf8'))
-    assert.equal(outbox.items.length, 0, 'no alert stays queued when all channels are disabled')
-  }
+  const outbox = JSON.parse(readFileSync(outboxPath, 'utf8'))
+  assert.equal(outbox.items.length, 1, 'the refused completion alert is queued')
+  assert.equal(outbox.items[0].kind, 'completed')
+  assert.match(outbox.items[0].title, /release/i)
   // The alert reached the engine: the debug log names the state directory.
   assert.ok(harness.logLines().some((line) => line.includes('state directory')), harness.logLines().join('\n'))
 
   const status = await harness.tool('notify_status').execute({}, {})
   assert.equal(status.enabled, true)
-  assert.equal(status.queued, 0)
+  assert.equal(status.queued, 1, 'the completion alert is waiting for a retry')
   assert.deepEqual(status.channels, [], 'every channel is disabled in this configuration')
+  assert.match(status.email, /not configured/)
+  assert.match(status.recent.join('\n'), /retrying a completed alert/)
 
   const manual = await harness.tool('notify_user').execute(
     { title: 'Manual alert', message: 'hello', urgency: 'info' },
@@ -155,7 +239,7 @@ bootTests('a finished turn produces a completion alert through the real wiring',
   assert.ok(manual.failures.length > 0)
 
   const flush = await harness.tool('notify_flush').execute({}, {})
-  assert.equal(flush.queued, 1)
+  assert.equal(flush.queued, 2, 'the completion alert and the manual one are both held')
   assert.equal(flush.delivered, 0)
 })
 
@@ -229,6 +313,49 @@ test('a question request notifies and the approved turn reports once', async () 
   for (const callback of scheduled) callback()
   assert.equal(engine.alertCount, 1, 'the question alert replaces the completion alert for this turn')
   assert.equal(engine.events[0].kind, 'question')
+})
+
+test('the deferred idle assessment reads the pending flag at dispatch time', async () => {
+  // Regression: the idle assessment is deferred so a question observed *after*
+  // the status transition is still seen, and the dispatch reads the flag with
+  // `tracker.consumePending`. That method was documented but missing, so every
+  // deferred dispatch threw inside the timer and no completion alert ever
+  // reached a channel.
+  const engine = {
+    events: [],
+    guard: new Guard(),
+    async raise(event) {
+      this.events.push(event)
+      return { delivered: true, channels: ['desktop'], failures: [] }
+    },
+  }
+  const tracker = new Tracker()
+  const scheduled = []
+  const runtime = createRuntime({
+    tracker,
+    engine,
+    settings: () => ({ alerts: { kinds: {} } }),
+    log: (message) => { throw new Error(`the runtime logged a failure: ${message}`) },
+    timer: (delay, callback) => {
+      scheduled.push(callback)
+      return () => undefined
+    },
+  })
+  runtime.noteSession({ sessionId: 's2' })
+  runtime.status({ sessionId: 's2', running: true })
+  // The turn runs and ends, then the agent goes idle — and only then does the
+  // question arrive, which is exactly the race the deferred read exists for.
+  tracker.noteTurnStart('s2')
+  tracker.noteSessionEvent('s2', 'tool/call', {})
+  tracker.noteTurnEnd('s2', 1, { kind: 'completed' })
+  runtime.status({ sessionId: 's2', running: false })
+  runtime.question({
+    sessionId: 's2',
+    request: { agent: { id: 's2' }, questions: [{ id: 'q1', header: 'Deploy', question: 'Deploy to production?' }] },
+  })
+  for (const callback of scheduled) callback()
+  assert.equal(engine.events.at(-1).kind, 'question', 'the late question wins over the completion alert')
+  assert.equal(tracker.consumePending('s2'), undefined, 'the flag is consumed, so the next transition does not re-alert')
 })
 
 test('an approval request notifies with the tool that needs permission', async () => {
