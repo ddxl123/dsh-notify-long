@@ -2,6 +2,7 @@
 
 [简体中文](README.zh.md) | English
 
+[![npm](https://img.shields.io/npm/v/dsh-notify-long?label=npm&color=cb3837)](https://www.npmjs.com/package/dsh-notify-long)
 [![release](https://img.shields.io/github/v/release/ddxl123/dsh-notify-long?label=release&color=blue)](https://github.com/ddxl123/dsh-notify-long/releases)
 [![test](https://img.shields.io/badge/tests-173%20passing-brightgreen)](https://github.com/ddxl123/dsh-notify-long)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -16,7 +17,7 @@ approval needed →  🔔 sound + email  "Approval needed: bash"
 ```
 
 - **Zero runtime dependencies** — Node built-ins only, with its own SMTP client. No `nodemailer`, no transitive tree.
-- **Zero build step** — plain JavaScript ESM; clone it and install it into a profile.
+- **Zero build step** — plain JavaScript ESM; install it from npm, or clone it and install it into a profile.
 - **Nothing gets lost** — every alert is written to a durable outbox before any channel is contacted, then retried with backoff and resumed after a restart.
 - **Not noisy** — per-event deduplication, per-fingerprint error cooldown, sound burst collapsing, and quiet hours (email still goes out).
 - **Adjustable live** — channel routing lives in `settings.yaml` and hot-reloads without a restart.
@@ -43,9 +44,17 @@ approval needed →  🔔 sound + email  "Approval needed: bash"
 
 Requires Node.js ≥ 20.11 and a working `dsh` (this plugin targets the web profile — the GUI you are probably reading this in).
 
-> This release is distributed as **source on GitHub** (`v0.1.0`); the plugin is not published to npm, so install it from a checkout as shown below.
+> Published on npm as [`dsh-notify-long`](https://www.npmjs.com/package/dsh-notify-long) and distributed as source on GitHub.
 
 This package declares `dsh.bundle.patch`, so it installs like any other profile plugin:
+
+```bash
+dsh plugin --profile web add dsh-notify-long
+```
+
+That is the whole install — no build step and no runtime dependencies. The harness peers this package imports are already reachable one level above the profile, so nothing else is required; see ["Harness peers"](#harness-peers) for the one case that differs.
+
+To work from a checkout instead, clone it and add the path (`link:`, which needs the extra peer step below):
 
 ```bash
 git clone https://github.com/ddxl123/dsh-notify-long.git
@@ -80,14 +89,21 @@ dsh plugin --profile web remove dsh-notify-long
 
 ### Harness peers
 
-`@deepseek-ai/schemastery` and `@deepseek-ai/dsh-tools` are **peer dependencies**: they belong to your harness installation, not to this package. Node resolves a package's bare imports from its **real** path, following symlinks, so a linked plugin never sees the profile's own `node_modules`. Link them once after a local install:
+`@deepseek-ai/schemastery` and `@deepseek-ai/dsh-tools` are **peer dependencies**: they belong to your harness installation, not to this package. Node resolves a package's bare imports from its **real** path, following symlinks, so whether they are found depends on how the plugin was installed:
+
+| Install | Peers resolve? | What to do |
+| --- | --- | --- |
+| `dsh plugin --profile web add dsh-notify-long` (npm) | yes — the package is a real directory inside the profile, and Node walks up to the harness packages one level above it | nothing |
+| `git clone` + `add .` (a `link:` symlink into your checkout) | no — resolution starts from the checkout, outside the profile tree | run the link script once |
+
+So only a checkout install needs the extra step:
 
 ```bash
 node scripts/link-harness-deps.mjs                        # finds your harness automatically
 node scripts/link-harness-deps.mjs --from /path/to/node_modules
 ```
 
-It is safe to re-run, and says so when they already resolve. A git or npm install does this for you through the package's `prepare` script; only a `link:` install (`add .`, or an absolute path) needs the manual step, because pnpm runs no lifecycle scripts for a local link.
+It is safe to re-run, and says so when they already resolve. pnpm runs no lifecycle scripts for a local `link:` dependency, which is why the npm install has nothing to do here and the checkout install does.
 
 Without them the plugin still loads, and only two things change: the composition row goes unvalidated (the documented defaults still apply), and the `notify_*` tools use plain definitions instead of `defineTool`. The same step links the peers that only tests import — `@deepseek-ai/dsh-settings` (the settings contract), and `@deepseek-ai/cordis`, `@deepseek-ai/dsh-client-connection` and `@deepseek-ai/dsh-user-questions` (the integration tests that mount the real plugin against the real Connection and user-question services). At runtime those services are injected by the running harness, never imported.
 

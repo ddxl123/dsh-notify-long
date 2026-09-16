@@ -2,6 +2,7 @@
 
 简体中文 | [English](README.md)
 
+[![npm](https://img.shields.io/npm/v/dsh-notify-long?label=npm&color=cb3837)](https://www.npmjs.com/package/dsh-notify-long)
 [![release](https://img.shields.io/github/v/release/ddxl123/dsh-notify-long?label=release&color=blue)](https://github.com/ddxl123/dsh-notify-long/releases)
 [![test](https://img.shields.io/badge/tests-173%20passing-brightgreen)](https://github.com/ddxl123/dsh-notify-long)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -16,7 +17,7 @@
 ```
 
 - **零运行时依赖**：只用 Node 内置模块，SMTP 客户端自己实现，不需要 `nodemailer`。
-- **零构建步骤**：纯 JavaScript ESM，`git clone` 后直接装进 profile 就能用。
+- **零构建步骤**：纯 JavaScript ESM，npm 直装，或者 `git clone` 后装进 profile。
 - **不会丢提醒**：每次提醒先落盘（durable outbox）再发送，失败自动退避重试；进程重启后继续投递。
 - **不吵人**：同类事件去重、报错按指纹冷却、提示音突发合并、可设置免打扰时段（免打扰时只发邮件）。
 - **可控**：可以在 `settings.yaml` 里热改路由（哪些事件走哪些通道），不用重启。
@@ -48,9 +49,17 @@
 
 前提：Node.js ≥ 20.11，已经能运行 `dsh`（本插件用的是 web profile，也就是你现在的界面）。
 
-> 当前版本通过 **GitHub 源码**分发（`v0.1.0`）；插件还没有发布到 npm，所以用下面的克隆方式安装。
+> 已发布到 npm：[`dsh-notify-long`](https://www.npmjs.com/package/dsh-notify-long)，同时也在 GitHub 上以源码分发。
 
 本包在 `package.json` 里声明了 `dsh.bundle.patch`，所以它和别的 profile 插件一样安装：
+
+```bash
+dsh plugin --profile web add dsh-notify-long
+```
+
+安装到此为止：没有构建步骤，也没有运行时依赖。插件 import 的 harness peer 包位于 profile 上一级，本来就能解析到，所以不需要额外操作；只有下面「harness peer 依赖」里那一种装法例外。
+
+想直接改源码的话，改成克隆本仓库、再添加路径（`link:` 装法，需要多做一步 peer 链接）：
 
 ```bash
 git clone https://github.com/ddxl123/dsh-notify-long.git
@@ -84,14 +93,21 @@ dsh plugin --profile web remove dsh-notify-long
 
 ### harness peer 依赖
 
-`@deepseek-ai/schemastery` 和 `@deepseek-ai/dsh-tools` 是 **peer 依赖**：它们属于你的 harness 安装，不属于本包。Node 解析裸导入时走的是包的**真实路径**（会跟随软链），所以被软链的插件看不到 profile 自己的 `node_modules`。本地安装后执行一次即可：
+`@deepseek-ai/schemastery` 和 `@deepseek-ai/dsh-tools` 是 **peer 依赖**：它们属于你的 harness 安装，不属于本包。Node 解析裸导入时走的是包的**真实路径**（会跟随软链），所以能否找到它们取决于装法：
+
+| 装法 | peer 能解析吗 | 要做什么 |
+| --- | --- | --- |
+| `dsh plugin --profile web add dsh-notify-long`（npm） | 能——包在 profile 里是真实目录，Node 向上走到上一级就是 harness 包 | 什么都不用做 |
+| `git clone` + `add .`（`link:` 软链到你的仓库） | 不能——解析起点在 profile 树之外的仓库 | 执行一次链接脚本 |
+
+所以只有克隆装法需要多做这一步：
 
 ```bash
 node scripts/link-harness-deps.mjs                        # 自动寻找你的 harness
 node scripts/link-harness-deps.mjs --from /path/to/node_modules
 ```
 
-重复执行是安全的；已经能解析时会直接告诉你无需处理。git / npm 安装会通过本包的 `prepare` 脚本自动完成；只有 `link:` 安装（`add .` 或绝对路径）需要手动这一步，因为 pnpm 对本地软链不跑生命周期脚本。同一步也会链上 `@deepseek-ai/dsh-settings`，它只被设置契约测试用到（运行时的 `dsh-settings` 由 harness 自己注入）。
+重复执行是安全的；已经能解析时会直接告诉你无需处理。pnpm 对本地 `link:` 依赖不跑生命周期脚本，所以 npm 装法本来就无事可做，而克隆装法需要手动补这一步。同一步也会链上 `@deepseek-ai/dsh-settings`，它只被设置契约测试用到（运行时的 `dsh-settings` 由 harness 自己注入）。
 
 即使没有这两个包，插件依然能加载，只有两点变化：组合条目不做过校验（文档里的默认值照常生效），以及 `notify_*` 工具改用普通定义而不是 `defineTool`。同一条命令还会链上只有测试会导入的几个 peer：`@deepseek-ai/dsh-settings`（设置契约测试）、`@deepseek-ai/cordis`、`@deepseek-ai/dsh-client-connection` 与 `@deepseek-ai/dsh-user-questions`（集成测试：把真实插件分别挂到真实 Connection 服务与真实提问服务上）。运行时这些服务由 harness 注入，插件代码本身从不导入它们。
 

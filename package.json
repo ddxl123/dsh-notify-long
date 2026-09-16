@@ -1,6 +1,6 @@
 {
   "name": "dsh-notify-long",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DeepSeek Harness plugin: system-sound, desktop and email alerts when an agent finishes a task, errors, or needs your input",
   "keywords": [
     "dsh",
@@ -42,6 +42,7 @@
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {
