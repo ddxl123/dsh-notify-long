@@ -12,7 +12,8 @@
 /**
  * @typedef {object} FakeHarnessOptions
  * @property {Record<string, any>} [services] - services `ctx.get(name)` should return
- * @property {any} [entry] - composition entry handed to `apply`
+ * @property {string} [entryId] - the Loader entry id the plugin's fiber carries
+ * @property {string} [profileHome] - the harness home exposed as `ctx.profileContext.home`
  */
 
 /**
@@ -57,6 +58,11 @@ export function createFakeHarness(options = {}) {
   }
 
   const ctx = {
+    // The Loader fiber the plugin runs in. The settings integration reads the
+    // entry id off it to claim the page policy and to filter
+    // `settings/document-updated` to this plugin's own form.
+    fiber: { entry: { id: options.entryId ?? 'dsh-notify-long' } },
+    ...options.profileHome === undefined ? {} : { profileContext: { home: options.profileHome } },
     logger: {
       info: (format, ...args) => logs.push({ level: 'info', message: `${format} ${args.join(' ')}`.trim() }),
       warn: (format, ...args) => logs.push({ level: 'warn', message: `${format} ${args.join(' ')}`.trim() }),
@@ -175,37 +181,92 @@ export function createFakeHarness(options = {}) {
 }
 
 /**
- * A settings stub that behaves like `ctx.settings.installSection`: it keeps the
- * base entry and applies patches the way the real service would.
+ * A settings stub that behaves like the 0.2 `ctx.settings` service, as far as
+ * this plugin touches it: the plugin no longer installs a namespace, it claims
+ * its own page policy on the fiber it runs in.
  *
- * @param {object} [options] - stub options
- * @param {any} [options.user] - initial user layer
  * @returns {any} the settings stub
- */export function createFakeSettings(options = {}) {
-  let source = () => undefined
-  let user = options.user
-  let hooked
+ */
+export function createFakeSettings() {
+  /** @type {any[]} */
+  const configurations = []
   return {
     writable: true,
-    installSection(_owner, namespace, _schema, base, hooks) {
-      if (namespace !== 'dsh-notify-long') throw new Error(`unexpected namespace ${namespace}`)
-      hooked = hooks
-      source = () => ({ ...base, ...user })
-      hooks.setSource(source)
+    /**
+     * Register the calling plugin instance's page policy.
+     *
+     * @param {any} presentation - the policy
+     * @param {any} owner - the fiber the policy belongs to
+     * @returns {Function} the disposer
+     */
+    configure(presentation, owner) {
+      // The real service throws for a second policy on one instance; a stub
+      // that silently accepted it would hide exactly the plugin bug this is
+      // here to catch.
+      if (configurations.some((entry) => entry.owner === owner)) {
+        throw new Error('Settings presentation is already configured for this plugin instance')
+      }
+      const record = { presentation, owner }
+      configurations.push(record)
+      return () => {
+        const index = configurations.indexOf(record)
+        if (index >= 0) configurations.splice(index, 1)
+      }
     },
-    get() {
-      return source()
+    /** @returns {any[]} the registered page policies, in order */
+    configurations() {
+      return configurations
     },
-    /** Apply a user-layer patch, as `settings.update` would. */
-    patch(next) {
-      user = { ...user, ...next }
-      source = () => ({ ...(hooked === undefined ? {} : {}), ...next })
-      hooked?.setSource(() => ({ ...next }))
-      hooked?.onChange()
+  }
+}
+
+/**
+ * Build a composition entry whose editable fields are live references.
+ *
+ * This is what the Loader hands `apply` once a Config schema marks fields
+ * `.volatile()`: the value is not on the row, the reference is, and a save
+ * rewrites the reference in place. `set()` is therefore a faithful stand-in for
+ * one settings save: it writes through the reference the plugin already holds,
+ * so a test observes the same thing a running harness would.
+ *
+ * Arrays and scalars become one reference each; plain objects are descended
+ * into, because the plugin's real schema marks leaves rather than sections.
+ *
+ * @param {Record<string, any>} [values] - the entry's initial values
+ * @returns {any} `{ config, set, refs }`
+ */
+export function createFakeConfig(values = {}) {
+  const write = Symbol.for('cosmokit.volatile.write')
+  /** @type {Map<string, any>} */
+  const refs = new Map()
+
+  /** @param {any} value - a config node @param {string[]} path - its key path @returns {any} the node with references at its leaves */
+  function wrap(value, path) {
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, wrap(child, [...path, key])]))
+    }
+    let current = value
+    const ref = Object.freeze({
+      get: () => current,
+      [write]: (next) => { current = next },
+    })
+    refs.set(path.join('.'), ref)
+    return ref
+  }
+
+  const config = wrap(values, [])
+  return {
+    config,
+    /** @param {string[]} path - the field to write @param {any} value - its new value @returns {void} */
+    set(path, value) {
+      const key = path.join('.')
+      const ref = refs.get(key)
+      if (ref === undefined) throw new Error(`no volatile field at ${key}`)
+      ref[write](value)
     },
-    /** @returns {any} the raw hooks the plugin registered */
-    hooks() {
-      return hooked
+    /** @returns {string[]} the key paths that are references */
+    paths() {
+      return [...refs.keys()]
     },
   }
 }

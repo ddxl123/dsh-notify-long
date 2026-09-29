@@ -1,21 +1,28 @@
 /**
- * dsh-notify-long — browser half: the plugin's card in Settings → Plugins.
+ * dsh-notify-long — browser half: the plugin's page on the Plugins screen.
  *
  * ## Why this file is shaped the way it is
  *
- * A DSH profile plugin has two faces. The host half (`src/index.js`) registers
- * the settings *namespace*; the browser half registers the *card* that edits
- * it. The plugins settings tab dispatches the `settings.plugin.item` slot by
- * settings namespace, so the two halves meet on one string — this package's
- * name — and neither needs to know about the other:
+ * A DSH profile plugin has two faces. The host half (`src/index.js`) declares
+ * the Config fields that may change while the harness runs; the browser half
+ * draws the page that edits them. Since 0.2 the two halves meet on one string —
+ * this package's name, which is the profile entry id — and neither needs to
+ * know about the other:
  *
- *   - host: `settings.installSection(ctx, 'dsh-notify-long', Config, entry, …)`
- *           makes the namespace served and writable;
- *   - browser: `ctx.slots.register({ name: 'settings.plugin.item',
- *              key: 'dsh-notify-long' }, Card)` claims the card seat for it.
+ *   - host: the fields marked `.volatile()` in the Config schema make the entry
+ *           *served*, and `settings.configure({ auto: false }, ctx.fiber)`
+ *           declines the schema-generated page;
+ *   - browser: `ctx.configForms.get('dsh-notify-long')` binds that entry, and
+ *              `ctx.configForms.whileServed([…])` registers the page only while
+ *              the host still serves it.
  *
- * A served namespace no card claims renders nothing, which is why the host
- * half alone puts nothing on screen.
+ * A served entry no page claims renders nothing but the harness's own generated
+ * form, which is why the host half alone puts no custom page on screen.
+ *
+ * (0.1.5 had a different shape of the same idea: `settings.installSection` on
+ * the host and a `settingsScope`-backed card keyed into `settings.plugin.item`.
+ * Both APIs were removed in 0.2; this file carries the migration notes inline
+ * where the old call used to be.)
  *
  * ## Why it is a hand-written bundle
  *
@@ -92,15 +99,10 @@ window.__ModuleLoader__.load({
     const LOG_REFRESH_MS = 5000
 
     const css = `
-.dshNotifyLongCard{list-style:none;margin:0}
-.dshNotifyLongDetails{border:.5px solid var(--dsw-alias-border-l4);border-radius:10px;background:var(--dsw-alias-bg-layer-2)}
-.dshNotifyLongHeader{cursor:pointer;display:flex;align-items:baseline;gap:10px;padding:12px 14px;flex-wrap:wrap}
-.dshNotifyLongHeader::marker{color:var(--dsw-alias-label-tertiary)}
-.dshNotifyLongTitle{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:600}
-.dshNotifyLongDescription{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;flex:1;min-width:0}
+.dshNotifyLongCard{margin:0;display:grid;gap:2px}
 .dshNotifyLongBadge{border:.5px solid var(--dsw-alias-border-l4);border-radius:999px;color:var(--dsw-alias-label-secondary);font-size:11px;padding:1px 8px}
 .dshNotifyLongBadgeWarn{border-color:var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-state-warn-primary)}
-.dshNotifyLongBody{border-top:.5px solid var(--dsw-alias-border-l3);padding:4px 14px 12px}
+.dshNotifyLongBody{padding:2px 0 4px}
 .dshNotifyLongGroup{border:0;margin:12px 0 0;padding:0;display:grid;gap:10px}
 .dshNotifyLongGroup>legend{color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:600;padding:0;letter-spacing:.02em}
 .dshNotifyLongRow{display:grid;gap:4px}
@@ -1184,31 +1186,30 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Render the plugin's card.
+     * Render the plugin's entry on the Plugins page.
      *
-     * A card whose namespace the host does not serve renders nothing, so a
-     * deployment that did not compose the host half shows no trace of it.
+     * The page asks twice for the same registration: `view: 'summary'` for the
+     * one-liner in the list, and `view: 'page'` for the body it mounts once the
+     * entry is opened. The hooks run before the branch so the summary render
+     * keeps the same hook order as the page render.
      *
      * @param {any} props - injected hooks, staged actions, and locale copy
-     * @returns {any} the card element, or null
+     * @returns {any} the one-liner, the page body, or null while unserved
      */
     function Card(props) {
       const state = props.useNotifySettings((snapshot) => snapshot)
       const log = props.useNotifyLog((snapshot) => snapshot)
       const { t } = props
+      // The page, not a disclosure, decides when the card is on screen now, so
+      // the log polling window is tied to the page view's lifetime.
+      React.useEffect(() => {
+        if (props.view !== 'page') return undefined
+        void props.setCardOpen(true)
+        return () => { void props.setCardOpen(false) }
+      }, [props.view])
+      if (props.view === 'summary') return t('cardDescription')
       if (!state.available) return null
-      return React.createElement('li', { className: 'dshNotifyLongCard' },
-        React.createElement('details', {
-          className: 'dshNotifyLongDetails',
-          onToggle: (event) => { props.setCardOpen(event.currentTarget.open === true) },
-        },
-        React.createElement('summary', { className: 'dshNotifyLongHeader' },
-          React.createElement('span', { className: 'dshNotifyLongTitle' }, t('cardTitle')),
-          React.createElement('span', { className: 'dshNotifyLongDescription' }, t('cardDescription')),
-          state.dirty ? React.createElement('span', { className: 'dshNotifyLongBadge' }, t('unsaved')) : null,
-          log.available && log.stats !== undefined && log.stats.failed > 0
-            ? React.createElement('span', { className: 'dshNotifyLongBadge dshNotifyLongBadgeWarn' }, `${t('logFailed')} ${log.stats.failed}`)
-            : null),
+      return React.createElement('div', { className: 'dshNotifyLongCard' },
         React.createElement('div', { className: 'dshNotifyLongBody' },
           state.writable ? null : React.createElement('p', { className: 'dshNotifyLongReadOnly' }, t('readOnly')),
           GROUPS.filter((group) => !ADVANCED_GROUPS.includes(group)).map((group) => renderGroup(group, state, props)),
@@ -1223,6 +1224,10 @@ window.__ModuleLoader__.load({
           renderLog(log, props),
           React.createElement('div', { className: 'dshNotifyLongFooter' },
             state.failed ? React.createElement('p', { className: 'dshNotifyLongFailed' }, t('saveFailed')) : null,
+            state.dirty ? React.createElement('span', { className: 'dshNotifyLongBadge' }, t('unsaved')) : null,
+            log.available && log.stats !== undefined && log.stats.failed > 0
+              ? React.createElement('span', { className: 'dshNotifyLongBadge dshNotifyLongBadgeWarn' }, `${t('logFailed')} ${log.stats.failed}`)
+              : null,
             React.createElement('button', {
               type: 'button',
               className: 'dshNotifyLongButton dshNotifyLongDiscard',
@@ -1234,7 +1239,7 @@ window.__ModuleLoader__.load({
               className: 'dshNotifyLongButton dshNotifyLongSave',
               disabled: !state.dirty || state.invalid || state.saving,
               onClick: () => { props.save() },
-            }, t(state.saving ? 'saving' : 'save'))))))
+            }, t(state.saving ? 'saving' : 'save')))))
     }
 
     /** Install this plugin's stylesheet once. */
@@ -1249,12 +1254,12 @@ window.__ModuleLoader__.load({
       document.head.append(tag)
     }
 
-    /** Cordis plugin name, matching the host half and the settings namespace. */
+    /** Cordis plugin name, matching the host half and the config namespace. */
     exports.name = NS
 
     /**
-     * Services this browser plugin consumes. `settingsScope` and `connection`
-     * are deliberately absent: they are requested through `ctx.inject` (or read
+     * Services this browser plugin consumes. `configForms` and `connection` are
+     * deliberately absent: they are requested through `ctx.inject` (or read
      * lazily, for the RPC caller) so a deployment that composes this plugin
      * without the settings domain still activates — a strict dependency here
      * would leave the entry pending, and the web boot fails loud on pending
@@ -1263,7 +1268,7 @@ window.__ModuleLoader__.load({
     exports.inject = ['slots', 'locale']
 
     /**
-     * Register the card seat.
+     * Register the entry on the Plugins page.
      *
      * @param {any} ctx - the browser plugin context
      * @returns {void}
@@ -1274,14 +1279,29 @@ window.__ModuleLoader__.load({
       ctx.effect(() => ctx.locale.register(LOCALE_NS, DICTIONARY), 'dsh-notify-long: settings dictionary')
       const feed = createFeed(callHost)
       ctx.effect(() => () => feed.dispose(), 'dsh-notify-long: activity log polling')
-      ctx.inject(['settingsScope'], (settingsCtx) => {
-        const scope = settingsCtx.settingsScope.bind({ namespace: NS })
-        const describeFace = settingsCtx.settingsScope.describe()
+      // 0.2 replaced the `settingsScope` service with `configForms`, and the
+      // `settings.plugin.item` seat with `plugins.item` on the sidebar's Plugins
+      // page. `get(namespace)` still hands back the same read/subscribe/mutate
+      // face the form was written against — the namespace is now the *host
+      // profile entry id*, which is this package's name because its own bundle
+      // patch inserts the row under that id.
+      ctx.inject(['configForms'], (settingsCtx) => {
+        const configForms = settingsCtx.configForms
+        const scope = configForms.get(NS)
+        const describeFace = configForms.describe()
         describeFace.ensure()
         const form = createForm(scope, describeFace)
-        ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-          name: 'settings.plugin.item',
-          key: NS,
+        // `whileServed` is what keeps the entry honest: the page is registered
+        // only while the host actually serves this namespace, so a deployment
+        // whose host half is absent (or whose Config declares no volatile field)
+        // shows no entry rather than a dead one.
+        ctx.effect(() => configForms.whileServed([NS], () => ctx.slots.inject('plugins.item', () => ctx.slots.register({
+          name: 'plugins.item',
+          // A list slot is addressed by `id`; `key` belongs to keyed slots.
+          id: NS,
+          // After the official settings pages, which sit at 10–40.
+          order: 60,
+          label: () => t('cardTitle'),
           locale: LOCALE_NS,
           inject: () => ({
             hooks: { notifySettings: form.store, notifyLog: feed.store },
@@ -1296,7 +1316,7 @@ window.__ModuleLoader__.load({
             flushQueue: feed.flush,
             clearLog: feed.clear,
           }),
-        }, Card))
+        }, Card))), 'dsh-notify-long: plugins page entry')
       })
     }
 

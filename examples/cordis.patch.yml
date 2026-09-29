@@ -7,10 +7,12 @@
 # override it there; a later layer replaces the row's whole `config`, so restate
 # every key you need on top of what the bundle patch set.
 #
-# Day-to-day changes do not belong here: the live `dsh-notify-long:` section of
-# `~/.dsh/settings.yaml` applies on save, without a restart. Reach for a patch
-# layer only for what must hold before the settings document is read — turning
-# the plugin off in one profile, or pinning a state directory.
+# Day-to-day changes do not belong here: the fields the Plugins page owns —
+# `enabled`, `language`, `alerts.channels` and `email.*` — are declared
+# `.volatile()`, so the plugin's own page edits them while the harness runs and
+# the value applies on save. Reach for a patch layer for everything else, and for
+# what must hold before any page is opened: turning the plugin off in one
+# profile, pinning a state directory, the per-kind switches.
 
 - id: dsh-notify-long
   config:

@@ -5,7 +5,8 @@
 #    password.
 # 2. Put the code in the environment rather than in this file:
 #        export DSH_SMTP_PASSWORD='your-authorization-code'
-# 3. Merge this section into ~/.dsh/settings.yaml and save; it applies live.
+# 3. Paste this row into `~/.dsh/profiles/web/cordis.patch.yml`. The mailbox is
+#    also editable from the Plugins page, which writes the same entry.
 #
 # What the host infers from `user` alone: the qq preset (smtp.qq.com:465,
 # implicit TLS), `from` = the account, and `to` = the account when no recipient
@@ -17,8 +18,9 @@
 #        from: "DSH <you@gmail.com>"
 #        to: [you@gmail.com]
 
-dsh-notify-long:
-  email:
-    enabled: true
-    user: 123456789@qq.com
-    # to: [you@example.com]     # optional: empty means "mail the account above"
+- id: dsh-notify-long
+  config:
+    email:
+      enabled: true
+      user: 123456789@qq.com
+      # to: [you@example.com]     # optional: empty means "mail the account above"

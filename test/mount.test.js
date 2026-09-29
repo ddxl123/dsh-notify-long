@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { createFakeConnection, createFakeHarness, createFakeSettings } from './helpers/fake-harness.js'
+import { createFakeConfig, createFakeConnection, createFakeHarness, createFakeSettings } from './helpers/fake-harness.js'
 import { Engine } from '../lib/core/engine.js'
 import { Guard } from '../lib/core/policy.js'
 import { Outbox } from '../lib/core/queue.js'
@@ -94,16 +94,15 @@ bootTests('apply() mounts against the real peer packages and registers its tools
   assert.equal(existsSync(join(home, 'dsh-notify-long')), true)
 })
 
-bootTests('the settings section attaches when the service arrives after apply', async () => {
+bootTests('the plugin claims its own settings page when the service arrives after apply', async () => {
   process.env.DSH_HOME = tempDir('dsh-notify-long-home')
-  // The real `dsh-settings-file` finishes its own async init after this plugin
-  // activates, so the service is genuinely absent at apply time. Reading it once
-  // with `ctx.get('settings')` therefore silently registered nothing — no
-  // namespace served, and the Settings → Plugins card rendered nothing.
+  // The real settings service finishes its own async init after this plugin
+  // activates, so it is genuinely absent at apply time — which is why the claim
+  // is made from an `inject` child rather than a one-shot `ctx.get('settings')`.
   const harness = createFakeHarness()
   await harness.mount({ email: { enabled: false }, sound: { enabled: false }, desktop: { enabled: false } })
-  // Two waits are parked: one for `settings` (the namespace and the card) and
-  // one for `connection` (the card's live log route). Neither is a hard
+  // Two waits are parked: one for `settings` (this plugin's own page policy)
+  // and one for `connection` (the card's live log route). Neither is a hard
   // dependency, so a headless deployment still activates.
   assert.equal(harness.pendingInjectCount(), 2, 'the plugin must wait for settings and connection rather than read them once')
   assert.deepEqual(harness.toolNames().sort(), ['notify_flush', 'notify_status', 'notify_test', 'notify_user'])
@@ -111,8 +110,69 @@ bootTests('the settings section attaches when the service arrives after apply', 
   const settings = createFakeSettings()
   harness.provide('settings', settings)
   assert.equal(harness.pendingInjectCount(), 1)
-  assert.notEqual(settings.hooks(), undefined, 'the section must attach once the service appears')
-  assert.equal(settings.get().email.enabled, false, 'the composition entry is the section base')
+  assert.equal(settings.configurations().length, 1, 'the page policy is claimed once the service appears')
+  assert.deepEqual(settings.configurations()[0].presentation, { auto: false }, 'the plugin renders its own page, so the generated one must stay off')
+  assert.equal(settings.configurations()[0].owner, harness.ctx.fiber, 'the policy names the fiber it belongs to')
+})
+
+bootTests('a settings save reaches the running plugin through its live config reference', async () => {
+  const home = tempDir('dsh-notify-long-home')
+  process.env.DSH_HOME = home
+  // The Loader hands `apply` a reference rather than a value for every field the
+  // Config schema marks `.volatile()`. A save rewrites that reference in place,
+  // which is the whole mechanism that replaced `installSection` in 0.2.
+  const live = createFakeConfig({
+    sound: { enabled: false },
+    desktop: { enabled: false },
+    email: { enabled: false },
+    alerts: { channels: ['sound'], kinds: {} },
+  })
+  const harness = createFakeHarness({ services: { settings: createFakeSettings() } })
+  await harness.mount(live.config)
+
+  const before = await harness.tool('notify_status').execute({}, {})
+  assert.deepEqual(before.channels, [], 'a channel that is switched off is not active even when listed')
+
+  live.set(['sound', 'enabled'], true)
+  const after = await harness.tool('notify_status').execute({}, {})
+  assert.deepEqual(after.channels, ['sound'], 'the next read sees the saved value without a remount')
+})
+
+bootTests('the real schema resolves the row into live references the plugin reads', async () => {
+  const home = tempDir('dsh-notify-long-home')
+  process.env.DSH_HOME = home
+  const { resolveConfig } = await import('@deepseek-ai/cordis')
+  const { Config } = await import('../src/index.js')
+  // Exactly what the Loader does to a row's `config` before `apply` sees it:
+  // validate through the plugin's own schema. With schemastery present, that is
+  // what turns each `.volatile()` field into a reference.
+  const resolved = resolveConfig({ Config }, {
+    sound: { enabled: true },
+    desktop: { enabled: false },
+    email: { enabled: false },
+    alerts: { channels: ['email'], kinds: {} },
+  })
+  assert.equal(typeof resolved.alerts.channels.get, 'function', 'a volatile field arrives as a reference, not a value')
+  assert.equal(typeof resolved.sound.enabled, 'boolean', 'a field the card does not edit is left as a plain value')
+
+  const harness = createFakeHarness({ services: { settings: createFakeSettings() } })
+  await harness.mount(resolved)
+  assert.deepEqual(
+    (await harness.tool('notify_status').execute({}, {})).channels,
+    [],
+    'the entry lists email, which is switched off, so nothing is active',
+  )
+
+  // `updateVolatile` is exactly this: the Loader writing the reference in place
+  // on a config save. Taking the protocol symbol rather than importing cosmokit
+  // keeps the test on the documented cross-copy contract the plugin relies on.
+  const write = Symbol.for('cosmokit.volatile.write')
+  resolved.alerts.channels[write](['sound'])
+  assert.deepEqual(
+    (await harness.tool('notify_status').execute({}, {})).channels,
+    ['sound'],
+    'the next read sees what the save wrote, through the same reference',
+  )
 })
 
 bootTests('the settings card route is published on the connection channel', async () => {
@@ -241,6 +301,54 @@ bootTests('a finished turn produces a completion alert through the real wiring',
   const flush = await harness.tool('notify_flush').execute({}, {})
   assert.equal(flush.queued, 2, 'the completion alert and the manual one are both held')
   assert.equal(flush.delivered, 0)
+})
+
+bootTests('a retried model request produces a retry alert through the real wiring', async () => {
+  const home = tempDir('dsh-notify-long-home')
+  process.env.DSH_HOME = home
+  const connection = createFakeConnection()
+  const harness = createFakeHarness({ services: { settings: createFakeSettings(), connection } })
+  await harness.mount({
+    language: 'en',
+    sound: { enabled: false },
+    desktop: { enabled: false },
+    email: { enabled: false },
+    debug: true,
+  })
+
+  const session = { id: 'session-retry', header: { cwd: '/tmp/project' } }
+  await harness.emit('session/created', session)
+  await harness.emit('api-session/status', 'session-retry', true)
+  await harness.emit('session/event', session, { type: 'turn/start', data: { turn: 1 } })
+  // Exactly what `@deepseek-ai/dsh-llm-retry` appends before its cancellable wait.
+  await harness.emit('session/event', session, {
+    type: 'llm/retry',
+    data: {
+      retryId: 'retry-a',
+      turn: 1,
+      step: 1,
+      provider: 'deepseek',
+      mode: 'normal',
+      policyKey: '["normal",5]',
+      retry: 2,
+      maxRetries: 5,
+      delayMs: 7_742,
+      failure: { message: 'Connection error.', code: 'CONNECTION' },
+    },
+  })
+  await sleep(200)
+
+  const outbox = JSON.parse(readFileSync(join(home, 'dsh-notify-long', 'outbox.json'), 'utf8'))
+  assert.equal(outbox.items.length, 1, 'the retry alert is attempted like any other alert')
+  assert.equal(outbox.items[0].kind, 'retry')
+  assert.match(outbox.items[0].body, /Failure reason: Connection error\. \(CONNECTION\)/)
+  assert.match(outbox.items[0].body, /Retry delay: 7\.7 s/)
+
+  const snapshot = await connection.call('snapshot', { limit: 20 })
+  assert.ok(
+    snapshot.value.entries.some((entry) => entry.kind === 'retry' && entry.event === 'queued'),
+    snapshot.value.entries.map((entry) => `${entry.event}:${entry.kind ?? ''}`).join(' '),
+  )
 })
 
 bootTests('a failing turn leaves a queued record instead of losing the alert', async () => {

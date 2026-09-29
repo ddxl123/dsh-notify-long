@@ -27,10 +27,10 @@ globalThis.window = {
 }
 
 /**
- * A minimal `react` stand-in: elements are plain records, and the one hook the
- * card uses returns the current snapshot. The card deliberately keeps no React
- * state of its own (its disclosures are native `<details>`), so nothing else is
- * needed to render it.
+ * A minimal `react` stand-in: elements are plain records, and the hooks the card
+ * uses either return the current snapshot or do nothing at all. The card keeps
+ * no React state of its own (its disclosure is a native `<details>`), so nothing
+ * else is needed to render it.
  *
  * @returns {any} the fake module namespace
  */
@@ -40,6 +40,7 @@ function fakeReact() {
       return { type, props: { ...(props ?? {}), children: children.length > 1 ? children : children[0] } }
     },
     Fragment: 'Fragment',
+    useEffect() {},
     useSyncExternalStore(_subscribe, getSnapshot) {
       return getSnapshot()
     },
@@ -112,6 +113,10 @@ function applyOp(section, op) {
 /**
  * A settings host stand-in: one namespace, one user layer, a describe mirror
  * whose secret sidecar follows the layer.
+ *
+ * The runtime pieces mirror the 0.2 client contract exactly: `configForms.get`
+ * hands back the `ConfigForm` (read/subscribe/mutate), `configForms.describe()`
+ * the shared mirror, and `configForms.whileServed` the registration gate.
  *
  * @param {any} [user] - the initial user layer
  * @returns {any} the scope, describe face, and the recorded operations
@@ -249,16 +254,22 @@ function mount(user, options = {}) {
     inject(_deps, callback) {
       callback(this)
     },
-    settingsScope: {
-      bind: (spec) => {
-        assert.equal(spec.namespace, 'dsh-notify-long')
+    configForms: {
+      get(namespace) {
+        assert.equal(namespace, 'dsh-notify-long')
         return host.scope
       },
       describe: () => host.describeFace,
+      whileServed(namespaces, register) {
+        assert.deepEqual(namespaces, ['dsh-notify-long'])
+        // The page is registered only while the host serves the namespace; the
+        // stand-in always serves it, which is the case a card test cares about.
+        return register(new Set(['dsh-notify-long']))
+      },
     },
     slots: {
       inject(name, callback) {
-        assert.equal(name, 'settings.plugin.item')
+        assert.equal(name, 'plugins.item')
         callback()
       },
       register(options_, component) {
@@ -274,6 +285,7 @@ function mount(user, options = {}) {
   const props = {
     ...injected,
     t,
+    view: 'page',
     useNotifySettings: (selector) => selector(injected.hooks.notifySettings.getSnapshot()),
     useNotifyLog: (selector) => selector(injected.hooks.notifyLog.getSnapshot()),
   }
@@ -319,18 +331,28 @@ test('the bundle registers one client module under the package id', () => {
   assert.equal(typeof registration.factory, 'function')
 })
 
-test('the client plugin claims the settings card seat for its own namespace', () => {
+test('the client plugin claims its entry on the Plugins page', () => {
   const { card, injected } = mount()
   assert.equal(clientModule.name, 'dsh-notify-long')
   assert.deepEqual(clientModule.inject, ['slots', 'locale'])
-  assert.equal(card.options.name, 'settings.plugin.item')
-  assert.equal(card.options.key, 'dsh-notify-long')
+  assert.equal(card.options.name, 'plugins.item', '0.2 moved plugin pages from settings.plugin.item to the Plugins page')
+  assert.equal(card.options.id, 'dsh-notify-long', 'a list slot is addressed by id, not key')
+  assert.equal(card.options.key, undefined, 'key belongs to keyed slots only')
   assert.equal(card.options.locale, 'dsh-notify-long')
+  assert.equal(typeof card.options.label, 'function')
+  assert.equal(card.options.label(), 'cardTitle')
   assert.equal(typeof injected.hooks.notifySettings.getSnapshot, 'function')
   assert.equal(typeof injected.hooks.notifyLog.getSnapshot, 'function')
   for (const action of ['edit', 'resetField', 'discard', 'save', 'refreshLog', 'setCardOpen', 'setLogOpen', 'testLog', 'flushQueue', 'clearLog']) {
     assert.equal(typeof injected[action], 'function', `expected the card to receive ${action}`)
   }
+})
+
+test('the summary view is the one-liner the Plugins page lists', () => {
+  const { card, props } = mount()
+  const summary = card.component({ ...props, view: 'summary' })
+  assert.equal(summary, 'cardDescription', 'the list row is copy, not the form')
+  assert.notEqual(card.component({ ...props, view: 'page' }), null)
 })
 
 test('the card renders nothing while the host does not serve the namespace', () => {

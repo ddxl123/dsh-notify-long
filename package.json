@@ -1,6 +1,6 @@
 {
   "name": "dsh-notify-long",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "DeepSeek Harness plugin: system-sound, desktop and email alerts when an agent finishes a task, errors, or needs your input",
   "keywords": [
     "dsh",
@@ -59,11 +59,11 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-settings": "^0.1.5-rc.1",
-    "@deepseek-ai/dsh-tools": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-settings": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.1",
     "@deepseek-ai/schemastery": "^3.18.2",
-    "@deepseek-ai/dsh-client-connection": "^0.1.5-rc.1",
-    "@deepseek-ai/dsh-user-questions": "^0.1.5-rc.1"
+    "@deepseek-ai/dsh-client-connection": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-user-questions": "^0.2.0-rc.1"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
@@ -93,7 +93,8 @@
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-settings"
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
       ]
     },
     "plugin": {

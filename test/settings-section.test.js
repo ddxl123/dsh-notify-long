@@ -58,16 +58,67 @@ contractTests('a stored password is redacted into the sidecar the card reads', a
   assert.deepEqual(empty.secrets, [{ path: ['email', 'pass'], set: false }])
 })
 
-test('the host namespace and the browser card key are the same string', () => {
-  const host = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8')
-  const browser = readFileSync(new URL('../client/index.js', import.meta.url), 'utf8')
-  const namespace = /installSection\(ctx, '([^']+)'/.exec(host)
-  assert.ok(namespace !== null, 'the host half must register a settings section')
-  assert.ok(
-    browser.includes(`const NS = '${namespace[1]}'`),
-    `the browser card must claim the settings.plugin.item seat keyed ${namespace[1]}`,
+contractTests('every path the card writes is one the host accepts', async () => {
+  // The decisive contract, checked with the host's own functions rather than a
+  // reimplementation: `volatileForm` decides whether the entry is served at all,
+  // and `isVolatilePath` is what the host runs over every form write before it
+  // touches the document. A path missing from either list is a card control that
+  // either never appears or always fails.
+  const entry = import.meta.resolve('@deepseek-ai/dsh-settings')
+  const { isVolatilePath, volatileForm } = await import(new URL('./types/schema.js', entry).href)
+
+  assert.notEqual(volatileForm(Config), undefined, 'an entry with no volatile field is never served, so the page cannot exist')
+  assert.deepEqual(
+    Object.keys(volatileForm(Config).dict ?? {}).sort(),
+    ['alerts', 'email', 'enabled', 'language'],
+    'the served form covers exactly the sections the card edits',
   )
-  assert.ok(browser.includes("name: 'settings.plugin.item'"), 'the card must register into the plugin card slot')
+
+  /** The paths the browser card writes, mirroring its `FIELDS` specs. */
+  const cardPaths = [
+    ['enabled'],
+    ['language'],
+    ['alerts', 'channels'],
+    ['email', 'enabled'],
+    ['email', 'preset'],
+    ['email', 'host'],
+    ['email', 'port'],
+    ['email', 'tls'],
+    ['email', 'user'],
+    ['email', 'pass'],
+    ['email', 'passEnv'],
+    ['email', 'passCommand'],
+    ['email', 'from'],
+    ['email', 'to'],
+    ['email', 'cc'],
+    ['email', 'subjectPrefix'],
+    ['email', 'requireTls'],
+    ['email', 'verifyCert'],
+  ]
+  for (const path of cardPaths) {
+    assert.equal(isVolatilePath(Config, path), true, `${path.join('.')} must be volatile or the host refuses the write`)
+  }
+
+  // Everything else stays ordinary composition configuration: read from the
+  // entry, changed by editing the profile, never writable from the browser.
+  for (const path of [['debug'], ['tools', 'enabled'], ['outbox', 'path'], ['alerts', 'dedupeWindowMs'], ['sound', 'enabled'], ['email', 'html']]) {
+    assert.equal(isVolatilePath(Config, path), false, `${path.join('.')} is composition-only`)
+  }
+})
+
+test('the patch row, the package name, and the card namespace are one string', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  const browser = readFileSync(new URL('../client/index.js', import.meta.url), 'utf8')
+  // The profile addresses the entry by row id, the harness serves the form under
+  // that same id, and the card binds it by that name. A drift between them is an
+  // entry that loads but can never be configured.
+  const rowId = /^\s*-?\s*id:\s*(\S+)\s*$/m.exec(patch)
+  assert.ok(rowId !== null, 'the bundle patch must insert a row')
+  assert.equal(rowId[1], pkg.name, 'the row id is the package the profile installs')
+  assert.ok(browser.includes(`const NS = '${rowId[1]}'`), 'the card must bind the entry id the host serves')
+  assert.ok(browser.includes("name: 'plugins.item'"), 'the card must register into the Plugins page slot')
+  assert.ok(browser.includes('configForms.whileServed([NS]'), 'the card must withdraw when the host stops serving the entry')
 })
 
 test('the host route and the browser card post to the same path', async () => {

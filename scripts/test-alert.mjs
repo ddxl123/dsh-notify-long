@@ -12,7 +12,7 @@
  *
  * Configuration comes from the same layers the plugin uses: the environment
  * (DSH_SMTP_PASSWORD), plus optional JSON at $DSH_HOME/dsh-notify-long/config.json.
- * The file is a flat object shaped like the plugin's own settings section:
+ * The file is a flat object shaped like the plugin's own configuration entry:
  *
  *   { "email": { "user": "me@qq.com", "pass": "authorization-code" } }
  *

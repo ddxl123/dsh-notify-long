@@ -68,14 +68,17 @@ async function mountQuestionRuntime(options = {}) {
     apply(ctx) {
       ctx.provide('agents', { get: (id) => (id === agent.id ? agent : undefined), roots: () => [agent] })
       ctx.provide('tools', { register: () => () => {} })
-      ctx.provide('paths', { home })
-      ctx.provide('settings', {
-        writable: true,
-        installSection(_owner, _ns, _schema, base, hooks) { hooks.setSource(() => ({ ...base, ...settings })) },
-      })
+      // Since 0.2 the settings service owns only this plugin's *page policy*:
+      // the values are read from the composition entry, so the stub has nothing
+      // to store.
+      ctx.provide('settings', { writable: true, configure: () => () => {} })
     },
   })
   root.plugin(UserQuestionService)
+  // `ctx.profileContext` is an app-boot property rather than a Cordis service,
+  // so it is assigned on the root the way the boot does it and inherited by
+  // every child context.
+  root.profileContext = { home }
 
   // The UI answerer, exactly as the browser half registers it: it claims the
   // request and returns the human's answer.
@@ -85,7 +88,7 @@ async function mountQuestionRuntime(options = {}) {
   })
   if (options.answererFirst === true) registerAnswerer()
 
-  const fiber = root.plugin({ name: module.name, inject: module.inject, apply: module.apply })
+  const fiber = root.plugin({ name: module.name, inject: module.inject, apply: module.apply }, settings)
   await new Promise((resolve) => { setTimeout(resolve, 250) })
   if (options.answererFirst !== true) registerAnswerer()
 

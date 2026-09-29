@@ -2,9 +2,10 @@
  * dsh-notify-long — DeepSeek Harness notification plugin.
  *
  * A subscribe-side Cordis plugin: it watches the harness for the moments that
- * need a human (a finished task, a failure, a question, an approval) and alerts
- * the operator over system sound, a desktop banner, and email — with a durable
- * outbox so an alert survives a reload or a temporary delivery failure.
+ * need a human (a finished task, a failure, a retried model request, a question,
+ * an approval) and alerts the operator over system sound, a desktop banner, and
+ * email — with a durable outbox so an alert survives a reload or a temporary
+ * delivery failure.
  *
  * Everything decision-shaped lives in `lib/`; this file only reads services,
  * subscribes to events, and registers the model-facing `notify_*` tools.
@@ -15,7 +16,7 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { deepMerge, describeError, sanitizeLine } from '../lib/util.js'
+import { deepMerge, describeError, resolveVolatile, sanitizeLine } from '../lib/util.js'
 import { activeChannels, Guard } from '../lib/core/policy.js'
 import { ActivityLog } from '../lib/core/activity.js'
 import { Outbox } from '../lib/core/queue.js'
@@ -112,11 +113,19 @@ function resolveConfigSchema() {
 function buildConfigSchema(z) {
   const channel = z.union(['sound', 'desktop', 'email'])
   return z.object({
-    enabled: z.boolean().default(true),
+    // `.volatile()` marks the fields the Settings card may edit while the
+    // harness runs. It *is* the registration: the Loader hands `apply` a live
+    // reference instead of a value for each one, `@deepseek-ai/dsh-settings`
+    // serves a form for exactly the entries that have at least one, and a write
+    // through that form rewrites the reference in place — no remount, no
+    // restart. Everything left unmarked (cooldowns, the outbox path, the tools
+    // switch, `debug`) is ordinary composition configuration: readable here,
+    // changeable only by editing the profile.
+    enabled: z.boolean().default(true).volatile(),
     // The language of every alert a human reads. `auto` follows the operating
     // system (Intl / LANG); an unset value means English, so a library caller
     // never gets machine-dependent output.
-    language: z.union(['auto', 'en', 'zh']).default('auto'),
+    language: z.union(['auto', 'en', 'zh']).default('auto').volatile(),
     sound: z.object({
       enabled: z.boolean().default(true),
       file: z.string(),
@@ -130,22 +139,22 @@ function buildConfigSchema(z) {
       sound: z.string(),
     }),
     email: z.object({
-      enabled: z.boolean().default(true),
-      preset: z.union(['qq', 'qq-exmail', '163', '163-enterprise', 'aliyun', 'gmail', 'outlook', 'office365', 'icloud', 'zoho', 'yahoo', 'sendgrid', 'mailgun', 'resend', 'brevo']),
-      host: z.string(),
-      port: z.natural().default(465),
-      tls: z.union(['implicit', 'starttls', 'plain']),
-      user: z.string(),
-      pass: z.string().role('secret'),
-      passEnv: z.string().default('DSH_SMTP_PASSWORD'),
-      passCommand: z.string(),
-      from: z.string(),
-      to: z.union([z.string(), z.array(z.string())]).default([]),
-      cc: z.union([z.string(), z.array(z.string())]).default([]),
-      subjectPrefix: z.string().default('[DSH]'),
+      enabled: z.boolean().default(true).volatile(),
+      preset: z.union(['qq', 'qq-exmail', '163', '163-enterprise', 'aliyun', 'gmail', 'outlook', 'office365', 'icloud', 'zoho', 'yahoo', 'sendgrid', 'mailgun', 'resend', 'brevo']).volatile(),
+      host: z.string().volatile(),
+      port: z.natural().default(465).volatile(),
+      tls: z.union(['implicit', 'starttls', 'plain']).volatile(),
+      user: z.string().volatile(),
+      pass: z.string().role('secret').volatile(),
+      passEnv: z.string().default('DSH_SMTP_PASSWORD').volatile(),
+      passCommand: z.string().volatile(),
+      from: z.string().volatile(),
+      to: z.union([z.string(), z.array(z.string())]).default([]).volatile(),
+      cc: z.union([z.string(), z.array(z.string())]).default([]).volatile(),
+      subjectPrefix: z.string().default('[DSH]').volatile(),
       html: z.boolean().default(true),
-      requireTls: z.boolean().default(true),
-      verifyCert: z.boolean().default(true),
+      requireTls: z.boolean().default(true).volatile(),
+      verifyCert: z.boolean().default(true).volatile(),
       preferPlain: z.boolean().default(true),
       allowPortFallback: z.boolean().default(true),
       heloName: z.string(),
@@ -156,7 +165,7 @@ function buildConfigSchema(z) {
       end: z.string(),
     }),
     alerts: z.object({
-      channels: z.array(channel).default(['sound', 'desktop', 'email']),
+      channels: z.array(channel).default(['sound', 'desktop', 'email']).volatile(),
       dedupeWindowMs: z.natural().default(300_000),
       errorCooldownMs: z.natural().default(600_000),
       channelCooldownMs: z.natural().default(15_000),
@@ -225,14 +234,17 @@ export function defaultsFor(value) {
 /**
  * Resolve the directory holding this plugin's durable state.
  *
+ * `ctx.profileContext.home` is present in every profile `dsh` launches. The
+ * environment fallback covers a composition booted without a profile at all, and
+ * resolves to the same place, so an upgraded deployment keeps reading the outbox
+ * and the activity log it already wrote rather than starting empty beside them.
+ *
  * @param {any} ctx - the plugin context
- * @returns {string} `<DSH_HOME or ~/.dsh>/dsh-notify-long`
+ * @returns {string} `<harness home>/dsh-notify-long`
  */
 export function stateDirectory(ctx) {
-  if (typeof ctx?.get === 'function') {
-    const paths = ctx.get('paths')
-    if (paths !== undefined && typeof paths.home === 'string' && paths.home !== '') return join(paths.home, 'dsh-notify-long')
-  }
+  const profileHome = ctx?.profileContext?.home
+  if (typeof profileHome === 'string' && profileHome !== '') return join(profileHome, 'dsh-notify-long')
   const home = sanitizeLine(process.env.DSH_HOME ?? '') || join(sanitizeLine(process.env.HOME ?? '') || '.', '.dsh')
   return join(home, 'dsh-notify-long')
 }
@@ -245,7 +257,7 @@ export function stateDirectory(ctx) {
  * @returns {void}
  */
 export function apply(ctx, rawConfig) {
-  const entry = defaultsFor(rawConfig)
+  const entry = defaultsFor(resolveVolatile(rawConfig))
   const debug = entry.debug === true
 
   const stateDir = stateDirectory(ctx)
@@ -266,38 +278,59 @@ export function apply(ctx, rawConfig) {
   const log = createLogger(ctx, entry, debug, activity)
   activity.onError = (message) => { log.raw('warn', message) }
 
-  /** @type {() => any} */
-  let source = () => entry
+  /** Holds the engine for callbacks that are wired before it exists. */
   const engineHolder = { current: undefined }
-  // Wait for the settings service instead of reading it once. `dsh-settings-file`
-  // finishes its own async init after this plugin activates, so a one-shot
-  // `ctx.get('settings')` returns undefined here — silently, and the section
-  // would never be attached (no namespace served, so the browser card in
-  // Settings → Plugins renders nothing). `ctx.inject` runs the callback when the
-  // service appears, which is the pattern every in-box plugin uses; the plugin
-  // still works without it, on the composition entry alone.
+
+  /**
+   * The effective configuration, re-read on every use.
+   *
+   * The volatile fields arrive as live references, so resolving them each time
+   * is what makes a Settings save take effect without a restart — the job
+   * `installSection`'s `setSource` hook did before the 0.2 settings rework,
+   * which removed that API altogether. `rawConfig` is the object the Loader
+   * keeps for this entry and rewrites in place, so holding on to it is holding
+   * on to the live document.
+   */
+  const settingsNow = () => defaultsFor(resolveVolatile(rawConfig))
+
+  // 0.2 turned the settings integration around: a plugin no longer installs a
+  // namespace for the harness's generic page. Marking fields `.volatile()` in
+  // the Config schema is what makes `@deepseek-ai/dsh-settings` serve this
+  // entry at all, and `configure({ auto: false })` says the page this plugin
+  // ships itself is the only one to render — without it the harness would also
+  // offer a schema-generated page for the same entry. The call is still worth
+  // making from an `inject` child: Settings settles after this plugin activates,
+  // and the child names the fiber the policy belongs to.
+  const entryId = ctx.fiber?.entry?.id
   ctx.inject(['settings'], (settingsCtx) => {
-    // `onChange` also fires when the section attaches, and a "settings changed"
-    // line at every boot would be noise in the card's log; only a later change
-    // is news.
-    let announced = false
     try {
-      settingsCtx.settings.installSection(ctx, 'dsh-notify-long', Config, entry, {
-        setSource: (current) => { source = current },
-        onChange: () => {
-          if (announced) {
-            log.debug('notification settings changed')
-            activity.append({ level: 'info', event: 'settings', message: 'notification settings changed' })
-          }
-          announced = true
-          engineHolder.current?.guard.reset()
-        },
-      })
+      settingsCtx.effect(
+        () => settingsCtx.settings.configure({ auto: false }, ctx.fiber),
+        'dsh-notify-long: own settings page',
+      )
     } catch (error) {
-      log.warn(`could not attach the settings section; using the composition entry only (${describeError(error)})`)
+      log.warn(`could not claim this plugin's settings page; the harness may also render its generated one (${describeError(error)})`)
     }
   })
-  const settingsNow = () => source() ?? entry
+
+  // A saved form changes the references above, so the cooldowns that key off
+  // the previous settings have to be dropped. `document-updated` also fires
+  // when the form first appears, and a "settings changed" line at every boot
+  // would be noise in the card's log; only a later change is news.
+  let announced = false
+  try {
+    ctx.on('settings/document-updated', (ns) => {
+      if (entryId !== undefined && String(ns) !== String(entryId)) return
+      if (announced) {
+        log.debug('notification settings changed')
+        activity.append({ level: 'info', event: 'settings', message: 'notification settings changed' })
+      }
+      announced = true
+      engineHolder.current?.guard.reset()
+    })
+  } catch (error) {
+    log.warn(`could not watch for settings changes; new values still apply (${describeError(error)})`)
+  }
 
   const outbox = new Outbox({
     path: sanitizeLine(settingsNow().outbox?.path ?? '') || join(stateDir, 'outbox.json'),
@@ -563,7 +596,7 @@ function defineNotifyTool(deps) {
       'Send the operator an out-of-band notification (system sound, desktop banner, email) without ending the turn.',
       'Use it when a long unattended job finishes, when you are about to wait on something, or when the operator asked to be told.',
       'urgency "action" means a human must act before work can continue; "error" marks a failure.',
-      'Do not use it for routine progress narration: the harness already alerts on finished turns, failures, questions and approvals.',
+      'Do not use it for routine progress narration: the harness already alerts on finished turns, failures, model-request retries, questions and approvals.',
     ].join(' '),
     parameters: {
       title: {

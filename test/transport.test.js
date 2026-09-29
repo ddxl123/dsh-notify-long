@@ -58,18 +58,20 @@ async function mountTransport(home) {
     apply(ctx) {
       ctx.provide('agents', {})
       ctx.provide('tools', { register: () => () => {} })
-      ctx.provide('paths', { home })
-      ctx.provide('settings', {
-        writable: true,
-        installSection(_owner, namespace, _schema, base, hooks) {
-          if (namespace !== 'dsh-notify-long') throw new Error(`unexpected namespace ${namespace}`)
-          hooks.setSource(() => base)
-        },
-      })
+      // The plugin's values live on its composition entry since 0.2; Settings
+      // only owns the page policy, so there is nothing else to stand in for.
+      ctx.provide('settings', { writable: true, configure: () => () => {} })
       holder.connection = new HostConnectionService(ctx, [], { isAuthenticated: () => true })
     },
   })
-  const fiber = root.plugin({ name: module.name, inject: module.inject, apply: module.apply })
+  // `ctx.profileContext` is an app-boot property, not a Cordis service: it is
+  // assigned on the root the way the boot does it, and every child inherits it.
+  root.profileContext = { home }
+  const fiber = root.plugin({ name: module.name, inject: module.inject, apply: module.apply }, {
+    email: { enabled: false },
+    sound: { enabled: false },
+    desktop: { enabled: false },
+  })
   await new Promise((resolve) => { setTimeout(resolve, 200) })
   return { root, fiber, connection: holder.connection }
 }

@@ -4,7 +4,7 @@
 
 [![npm](https://img.shields.io/npm/v/dsh-notify-long?label=npm&color=cb3837)](https://www.npmjs.com/package/dsh-notify-long)
 [![release](https://img.shields.io/github/v/release/ddxl123/dsh-notify-long?label=release&color=blue)](https://github.com/ddxl123/dsh-notify-long/releases)
-[![test](https://img.shields.io/badge/tests-173%20passing-brightgreen)](https://github.com/ddxl123/dsh-notify-long)
+[![test](https://img.shields.io/badge/tests-186%20passing-brightgreen)](https://github.com/ddxl123/dsh-notify-long)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Give [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) an ear and a phone line: **when a task finishes, fails, or needs your answer, you get a system sound, a desktop banner, and an email** — no more babysitting the terminal.
@@ -13,6 +13,7 @@ Give [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`)
 task finished   →  🔔 sound + banner + email  "Finished: nightly build"
 needs a choice  →  🔔 a different sound + email  "Needs your input: which database?"
 failure         →  🔔 alert tone + email  "Error: model route exploded …"
+model retry     →  🔔 warning tone + email  "Retrying model request: nightly build"
 approval needed →  🔔 sound + email  "Approval needed: bash"
 ```
 
@@ -20,7 +21,7 @@ approval needed →  🔔 sound + email  "Approval needed: bash"
 - **Zero build step** — plain JavaScript ESM; install it from npm, or clone it and install it into a profile.
 - **Nothing gets lost** — every alert is written to a durable outbox before any channel is contacted, then retried with backoff and resumed after a restart.
 - **Not noisy** — per-event deduplication, per-fingerprint error cooldown, sound burst collapsing, and quiet hours (email still goes out).
-- **Adjustable live** — channel routing lives in `settings.yaml` and hot-reloads without a restart.
+- **Adjustable live** — channel routing, the mailbox and the alert language are declared `.volatile()`, so the plugin's own page edits them while the harness runs and the next alert uses the new value; no restart, no remount.
 - **Simple to configure** — the settings card asks for a QQ mailbox and its authorization code; the server, the sender and the recipient all follow from that.
 - **You can see what happened** — the same card carries an activity log: every delivery, suppression, retry and plugin log line, plus a **Send test** button.
 
@@ -114,22 +115,22 @@ Configuration resolves in layers, later wins:
 | Layer | Where | Use it for |
 | --- | --- | --- |
 | Composition row | the row in this package's `cordis.patch.yml`, overridable from `~/.dsh/profiles/web/cordis.patch.yml` | Install-time defaults |
-| Settings document (live) | the `dsh-notify-long:` section of `~/.dsh/settings.yaml` | Day-to-day changes, applied on save |
+| Live config entry | the `dsh-notify-long` row's `config` in `~/.dsh/profiles/web/cordis.patch.yml`, written by the settings page | Day-to-day changes, applied on save |
 | Environment | `DSH_SMTP_PASSWORD`, … | Secrets only |
 
 ### 1. In the GUI (recommended)
 
-The plugin ships a browser half, so its card appears in the app you are reading this in:
+The plugin ships a browser half, so its page appears in the app you are reading this in:
 
-**Settings → Plugins → QQ mailbox notifications** (the tab renders one card per configurable plugin; the card itself follows the interface language).
+**Plugins** in the sidebar → **QQ mailbox notifications** (the page lists one entry per configurable plugin; the entry and the form follow the interface language).
 
-The card asks for three things — a **QQ mailbox address**, its **authorization code**, and (optionally) a **recipient** — because that is the whole configuration:
+The form asks for three things — a **QQ mailbox address**, its **authorization code**, and (optionally) a **recipient** — because that is the whole configuration:
 
 - the address alone selects the QQ provider preset (`smtp.qq.com:465`, implicit TLS) and becomes the sender;
 - an empty recipient means "mail me": the alert goes to the address you typed;
 - a bare QQ number works too, and is expanded to `<number>@qq.com`.
 
-Save writes the same `dsh-notify-long:` section of `~/.dsh/settings.yaml` that the YAML route below writes by hand — through the settings document's revision-fenced write path — so the two are interchangeable and neither needs a restart. Everything else (host, port, transport, certificate policy, Cc, subject prefix, the password environment variable and keychain command) still exists, folded into the card's collapsed **Advanced** disclosure.
+Save writes the `config` of the plugin's own row in the active profile's patch — through the configuration editor's revision-fenced write path — so it is the same document the YAML route below edits by hand, and neither needs a restart. Everything else (host, port, transport, certificate policy, Cc, subject prefix, the password environment variable and keychain command) still exists, folded into the form's collapsed **Advanced** disclosure.
 
 Two things worth knowing:
 
@@ -140,30 +141,37 @@ Where the code comes from: QQ Mail → **Settings → Account → IMAP/SMTP serv
 
 Only the switches that decide whether anything is sent at all (`enabled`, `alerts.channels`, `email.enabled`) sit next to those three fields; `quietHours`, per-kind switches, sound names and the outbox stay in the YAML below.
 
-### 2. Email in `settings.yaml`
+### 2. Email by hand (profile patch)
 
-The card is the easy path; the same section written by hand needs no server fields either:
+The page is the easy path; the same values written by hand go in the entry the bundle patch inserts, under `config:`. Patches replace a row's whole `config`, so restate every key you need:
 
 ```yaml
-dsh-notify-long:
-  language: auto                       # alert language: auto | zh | en (auto follows the system)
-  email:
-    user: 123456789@qq.com            # a QQ address (or a bare QQ number) selects the QQ preset
-    pass: "your-authorization-code"    # or leave this out and export DSH_SMTP_PASSWORD
-    # to: [you@example.com]            # optional: empty means "mail the account above"
+# ~/.dsh/profiles/web/cordis.patch.yml
+- id: dsh-notify-long
+  name: dsh-notify-long
+  config:
+    language: auto                     # alert language: auto | zh | en (auto follows the system)
+    email:
+      user: 123456789@qq.com          # a QQ address (or a bare QQ number) selects the QQ preset
+      pass: "your-authorization-code"  # or leave this out and export DSH_SMTP_PASSWORD
+      # to: [you@example.com]          # optional: empty means "mail the account above"
 ```
+
+A profile patch replaces ordinary configuration but not a live one: `enabled`, `language`, `alerts.channels` and the `email.*` fields above are the ones the settings page owns, so leave them to the page (or to this patch — both write the same entry).
 
 Every alert a human reads — subject, body, banner title, test alert — is rendered in that language. `auto` (the shipped default) follows the operating system: `Intl` first, then `LANG`/`LC_ALL`, and anything that is not a Chinese locale renders English. An **unset** `language` means English rather than "detect", so a library caller never gets machine-dependent output.
 
 The QQ preset is inferred whenever the account is a QQ address (or a bare QQ number) and neither `preset` nor `host` is configured, and `from` / `to` then default to that account — which is why the block above is complete. Naming another provider still works, and an explicit value always wins:
 
 ```yaml
-dsh-notify-long:
-  email:
-    preset: gmail              # fills in host / port / transport, see the list below
-    user: you@gmail.com        # login account
-    from: "DSH <you@gmail.com>"
-    to: [you@gmail.com]        # one or more recipients
+- id: dsh-notify-long
+  name: dsh-notify-long
+  config:
+    email:
+      preset: gmail              # fills in host / port / transport, see the list below
+      user: you@gmail.com        # login account
+      from: "DSH <you@gmail.com>"
+      to: [you@gmail.com]        # one or more recipients
 ```
 
 `preset` accepts `qq`, `qq-exmail`, `163`, `163-enterprise`, `aliyun`, `gmail`, `outlook`, `office365`, `icloud`, `zoho`, `yahoo`, `sendgrid`, `mailgun`, `resend`, `brevo`.
@@ -196,6 +204,7 @@ The bundled CLI uses the same layers, so you can verify before restarting:
 ```bash
 node scripts/test-alert.mjs --channel email
 node scripts/test-alert.mjs --channel sound --kind error   # audition the failure tone
+node scripts/test-alert.mjs --channel sound --kind retry   # …and the retry tone
 ```
 
 ### 4. Verify
@@ -211,25 +220,26 @@ Or ask the agent:
 ### 5. Quiet hours and per-event switches
 
 ```yaml
-dsh-notify-long:
-  quietHours:
-    start: '23:00'
-    end: '07:00'      # inside the window: no sound, no banner, email still sent
-  alerts:
-    channels: [sound, desktop, email]
-    kinds:
-      completed: { enabled: true }
-      question:  { enabled: true, channels: [sound, desktop, email] }  # per-kind override
-      error:     { enabled: true }
-      subagent:  { enabled: false }   # child agents are opt-in (they are chatty)
-  sound:
-    perKind:
-      completed: Glass
-      error: Basso
-      question: Ping
-  desktop:
-    titlePrefix: "[dsh]"   # useful when you run several machines
-    sound: none            # banner sound; turn it off when the sound channel already plays
+# every value below goes under `config:` in the `dsh-notify-long` row (see "Email by hand")
+quietHours:
+  start: '23:00'
+  end: '07:00'      # inside the window: no sound, no banner, email still sent
+alerts:
+  channels: [sound, desktop, email]
+  kinds:
+    completed: { enabled: true }
+    question:  { enabled: true, channels: [sound, desktop, email] }  # per-kind override
+    error:     { enabled: true }
+    retry:     { enabled: true }    # a model request was retried (a flapping connection)
+    subagent:  { enabled: false }   # child agents are opt-in (they are chatty)
+sound:
+  perKind:
+    completed: Glass
+    error: Basso
+    question: Ping
+desktop:
+  titlePrefix: "[dsh]"   # useful when you run several machines
+  sound: none            # banner sound; turn it off when the sound channel already plays
 ```
 
 ## The card's activity log
@@ -250,6 +260,7 @@ The panel posts to one exact route, `/api/dsh-notify-long`, which the host half 
 | `question` | the agent calls `ask_user_question` (including plan review) | all | the questions and their options |
 | `approval` | an action needs your permission | all | tool name and reason |
 | `error` | a turn/step failed, or a session-level error | all | the failure message and code, cooled down per fingerprint |
+| `retry` | a model request failed and the harness is retrying it | all | failure reason, retry delay and attempt number, cooled down per failure family |
 | `subagent` | a child agent settled (off by default) | off | the child's final output |
 | `manual` | the model calls `notify_user` | all | your own title and body |
 | `test` | `notify_test` self-check | all | per-channel results |
@@ -260,6 +271,9 @@ Decision details — each of these is asserted in `test/triggers.test.js`:
 - **One alert per turn.** If the turn already alerted for a question, approval, or error, the idle transition does not add a "finished" notice.
 - **A failure is announced once.** The `agent/error` observer alerts the moment it sees the failure, and the idle assessment that follows reads the same cooldown key, so one failure never mails twice.
 - **A failed turn is never "finished".** If a turn ended in failure without an observed error event, the idle assessment still reports it as a failure.
+- **A retry is news, even though the harness recovers.** `llm/retry` is appended the moment a model request fails and another attempt is scheduled — the same moment the chat card shows "waiting to retry", with the failure reason and the delay. The alert quotes both, plus where the attempt sits in its chain (`attempt 2 of 5 · provider: deepseek`). It fires on the *scheduled* retry, not on `llm/retry-started` (the same retry a moment later), so one retry is one alert. Recovering does not swallow the turn: a session that retried and then finished alerts twice — once for the retry, once for "task finished".
+- **A flapping connection does not mail once per attempt.** Retries of the same failure family share a fingerprint, so they cool down exactly like repeated failures do; a different failure (a rate limit after a connection error) is a different family and still alerts.
+- **A retry never silences the failure it preceded.** The retry fingerprint is a distinct key from the terminal error's, so a turn that gives up after three attempts alerts as a retry *and* as an error.
 - **Workless turns are skipped.** A turn that entered no step, made no tool call and produced no reply — empty input, an immediately cancelled turn — is not announced, and neither is a session that merely toggled status (a cold or resumed one).
 - **A cancelled turn that ran work is announced.** Cancellation after real work is news; cancellation before it is not.
 - **Child sessions do not nag.** A subagent child is not a "task finished" unless `subagent.enabled` is on.
@@ -281,72 +295,72 @@ State lives in `~/.dsh/dsh-notify-long/`: `outbox.json` (atomic writes, removed 
 Every field is optional; defaults are in parentheses.
 
 ```yaml
-dsh-notify-long:
-  enabled: true                # master switch
-  language: auto               # alert language: auto (system) | en | zh
+# every value below goes under `config:` in the `dsh-notify-long` row (see "Email by hand")
+enabled: true                # master switch
+language: auto               # alert language: auto (system) | en | zh
 
-  sound:
-    enabled: true
-    file:                      # global audio file (empty = per-kind default)
-    player:                    # afplay (macOS) / paplay, pw-play, aplay, ffplay (Linux)
-    perKind: {}                # kind → sound name or file path
-    timeoutMs: 10000
+sound:
+  enabled: true
+  file:                      # global audio file (empty = per-kind default)
+  player:                    # afplay (macOS) / paplay, pw-play, aplay, ffplay (Linux)
+  perKind: {}                # kind → sound name or file path
+  timeoutMs: 10000
 
-  desktop:
-    enabled: true
-    titlePrefix:
-    sound:                     # macOS banner sound name; `none` to stay silent
+desktop:
+  enabled: true
+  titlePrefix:
+  sound:                     # macOS banner sound name; `none` to stay silent
 
-  email:
-    enabled: true
-    preset:                    # qq / gmail / outlook / sendgrid / … (fills host, port, tls;
-                               # inferred as qq from a QQ account when unset)
-    host:
-    port: 465
-    tls:                       # implicit | starttls | plain (inferred from the port otherwise)
-    user:
-    pass:                      # literal secret (not recommended)
-    passEnv: DSH_SMTP_PASSWORD # environment variable holding the secret
-    passCommand:               # command whose stdout is the secret
-    from:                      # defaults to `user`
-    to: []                     # defaults to `from` ("mail me")
-    cc: []
-    subjectPrefix: "[DSH]"
-    html: true                 # attach an HTML alternative
-    requireTls: true           # never authenticate over cleartext
-    verifyCert: true
-    preferPlain: true          # prefer AUTH PLAIN, else LOGIN / CRAM-MD5
-    allowPortFallback: true    # try 465/587/25 when the configured port fails
-    heloName:                  # EHLO name, defaults to this host
-    timeoutMs: 20000
+email:
+  enabled: true
+  preset:                    # qq / gmail / outlook / sendgrid / … (fills host, port, tls;
+                             # inferred as qq from a QQ account when unset)
+  host:
+  port: 465
+  tls:                       # implicit | starttls | plain (inferred from the port otherwise)
+  user:
+  pass:                      # literal secret (not recommended)
+  passEnv: DSH_SMTP_PASSWORD # environment variable holding the secret
+  passCommand:               # command whose stdout is the secret
+  from:                      # defaults to `user`
+  to: []                     # defaults to `from` ("mail me")
+  cc: []
+  subjectPrefix: "[DSH]"
+  html: true                 # attach an HTML alternative
+  requireTls: true           # never authenticate over cleartext
+  verifyCert: true
+  preferPlain: true          # prefer AUTH PLAIN, else LOGIN / CRAM-MD5
+  allowPortFallback: true    # try 465/587/25 when the configured port fails
+  heloName:                  # EHLO name, defaults to this host
+  timeoutMs: 20000
 
-  quietHours:
-    start:                     # 'HH:MM'
-    end:                       # 'HH:MM' (midnight wrap handled: 23:00 → 07:00)
+quietHours:
+  start:                     # 'HH:MM'
+  end:                       # 'HH:MM' (midnight wrap handled: 23:00 → 07:00)
 
-  alerts:
-    channels: [sound, desktop, email]
-    dedupeWindowMs: 300000     # same event alerts once per 5 minutes
-    errorCooldownMs: 600000    # same failure fingerprint cools down for 10 minutes
-    channelCooldownMs: 15000   # sound burst collapse window
-    kinds: {}                  # { <kind>: { enabled, channels } }
+alerts:
+  channels: [sound, desktop, email]
+  dedupeWindowMs: 300000     # same event alerts once per 5 minutes
+  errorCooldownMs: 600000    # same failure fingerprint cools down for 10 minutes
+  channelCooldownMs: 15000   # sound burst collapse window
+  kinds: {}                  # { <kind>: { enabled, channels } }
 
-  outbox:
-    path:                      # default ~/.dsh/dsh-notify-long/outbox.json
-    flushOnStart: true         # deliver anything left over at boot
+outbox:
+  path:                      # default ~/.dsh/dsh-notify-long/outbox.json
+  flushOnStart: true         # deliver anything left over at boot
 
-  tools:
-    enabled: true              # register the notify_* tools
+tools:
+  enabled: true              # register the notify_* tools
 
-  log:
-    delivered: true
+log:
+  delivered: true
 
-  debug: false                 # log the state directory and queue recovery
+debug: false                 # log the state directory and queue recovery
 ```
 
 ## Troubleshooting
 
-**A configuration change did nothing.** `settings.yaml` hot-reloads; `config:` inside `cordis.patch.yml` needs a restart. `notify_status` shows what is actually in effect.
+**A configuration change did nothing.** The fields the settings page owns (`enabled`, `language`, `alerts.channels`, `email.*`) apply on save; anything else in the row's `config` is ordinary composition configuration and needs a restart. `notify_status` shows what is actually in effect.
 
 **No sound.** `node scripts/test-alert.mjs --channel sound` prints the exact command it runs. macOS needs `/System/Library/Sounds/*.aiff` (shipped); Linux needs one of `paplay` / `pw-play` / `aplay` / `ffplay`; containers and remote hosts usually have no audio device — use email there.
 
@@ -358,7 +372,7 @@ node scripts/test-alert.mjs --channel email --trace   # the SMTP exchange, crede
 
 Usual causes: a login password instead of an app password, port 465 blocked by a firewall (try `port: 587` with `tls: starttls`), a sender outside the authenticated domain, or a self-signed certificate (`verifyCert: false` temporarily).
 
-**Too many alerts.** Raise `alerts.dedupeWindowMs`, disable `alerts.kinds.subagent.enabled`, or set `quietHours`.
+**Too many alerts.** Raise `alerts.dedupeWindowMs`, disable `alerts.kinds.subagent.enabled` or `alerts.kinds.retry.enabled` (model retries are the chattiest kind on a flaky network), or set `quietHours`. A retry can be kept but made silent with `retry: { enabled: true, channels: [email] }`.
 
 **Does it slow the agent down?** No: every channel is an async subprocess or socket call with a hard timeout, failures are queued rather than raised, and nothing blocks the turn.
 
@@ -366,7 +380,7 @@ Usual causes: a login password instead of an app password, port 465 blocked by a
 
 ```bash
 npm run link-deps          # link the harness peers so the boot-level tests run
-node --test test/          # 173 tests: policy, rendering, SMTP (local fake server), queue, engine,
+node --test test/          # 186 tests: policy, rendering, SMTP (local fake server), queue, engine,
                            # activity log, card endpoints, message catalogue, boot-level mount,
                            # browser-bundle card, the trigger spec, a real Cordis/Connection
                            # transport integration, and real user-question notifications
@@ -378,7 +392,7 @@ Layout:
 
 ```
 src/index.js                 Cordis plugin entry: read services, subscribe, register tools (thin wiring)
-client/index.js              Browser half: the Settings → Plugins card for the SMTP fields
+client/index.js              Browser half: the Plugins page for the SMTP fields
 lib/core/                    Harness-free decisions: policy, text, i18n, event folding, queue, engine, activity log
 lib/channels/                The three delivery channels: sound, desktop, email
 lib/email/                   Hand-written SMTP client plus RFC 5322 / MIME construction
@@ -390,8 +404,8 @@ scripts/install.mjs          Wrapper: `dsh plugin --profile add` plus the harnes
 scripts/link-harness-deps.mjs  Makes the harness peers resolvable from this package
 scripts/test-alert.mjs       Channel self-check outside the harness
 test/                        Unit tests, a fake SMTP server, a fake-harness mount test, the browser bundle's card
-                             tests, the trigger spec, and integration tests against the real Cordis
-                             runtime (Connection transport, user-question waterfall)
+                             tests, the trigger spec, and integration tests against the real harness
+                             packages (Connection transport, user-question waterfall, the retry policy)
 ```
 
 ## Design notes
@@ -401,7 +415,8 @@ test/                        Unit tests, a fake SMTP server, a fake-harness moun
 - **Why write to disk before sending?** An alert is only useful if it arrives. The outbox is written first and the record is removed only after a channel succeeds, so a crash, a reload, or a network drop cannot swallow "your task finished".
 - **Why is the log a second wire instead of more settings?** A settings namespace carries configuration, and configuration is all it carries — a card cannot learn from it whether an alert arrived. So the log rides one exact Fetch route the host half registers on Connection's `/api` channel, and the card degrades to "log unavailable" on a deployment that does not provide `connection` rather than failing to render. The route goes through `connection.fetch.register` rather than the more obvious `connection.rpc.handle`: the RPC registry mounts a channel with the *provider's* fiber, where `webServer` is not visible, so `handle()` throws `cannot get property "webServer" without inject` from any consumer plugin and the channel is never mounted.
 - **Why infer the QQ preset?** The overwhelmingly common configuration is a QQ mailbox and an authorization code, and asking for `smtp.qq.com`, `465` and `implicit` on top of that is three questions with one answer. The inference only fires when the account is a QQ one *and* the user configured no preset and no host, so an explicit choice is never overwritten.
-- **Why does the plugin wait for the settings service?** `dsh-settings-file` finishes its own async init *after* this plugin activates, so a one-shot `ctx.get('settings')` at apply time returns nothing — and a section that is never attached serves no namespace, which makes the Settings → Plugins card render nothing at all. `ctx.inject(['settings'], …)` attaches the section whenever the service appears, and the plugin still runs on its composition entry when a deployment has no settings domain.
+- **How does a save reach a running plugin?** A field marked `.volatile()` in the Config schema does not arrive in `apply` as a value: the Loader hands over a *reference* (`get()`, rewritten in place on a save), and signing up for that is the whole mechanism. It is also what makes the entry configurable at all — `@deepseek-ai/dsh-settings` serves a form for exactly the entries that have at least one volatile field — and `settings.configure({ auto: false }, ctx.fiber)` declines the schema-generated page because this plugin draws its own. The claim is made from an `inject` child, since the settings service finishes its own async init after this plugin activates, and the plugin reads its composition entry regardless, so a deployment with no settings domain still alerts.
+- **Why does the page live on the Plugins screen?** Because that is where a plugin's own configuration belongs in 0.2: the card binds its entry through the client `configForms` service and registers into the `plugins.item` slot, and withdraws itself when the host stops serving the entry rather than leaving a dead page behind.
 
 ---
 

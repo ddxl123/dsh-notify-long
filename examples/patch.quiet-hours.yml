@@ -1,0 +1,17 @@
+# Night mode: silence sound and desktop banners between 23:00 and 07:00 while
+# email keeps flowing, so a 3 a.m. failure is waiting in your inbox.
+#
+# Put this in `~/.dsh/profiles/web/cordis.patch.yml` (or `$DSH_HOME/cordis.patch.yml`).
+# A patch replaces the row's whole `config`, so restate every key you need on top
+# of what the bundle patch set.
+
+- id: dsh-notify-long
+  config:
+    quietHours:
+      start: '23:00'
+      end: '07:00'
+    alerts:
+      kinds:
+        subagent: { enabled: false }   # child agents stay quiet
+    desktop:
+      sound: none                      # the sound channel already plays; avoid two tones

@@ -23,8 +23,10 @@
 # Every value below is overridable from a later layer (`$DSH_HOME/cordis.patch.yml`
 # or a `--patch` overlay); a patch replaces a row's whole `config`, so restate
 # every key you need. Anything omitted falls back to the plugin's documented
-# default. Day-to-day changes belong in the live `dsh-notify-long:` section of
-# `$DSH_HOME/settings.yaml` instead, which applies on save without a restart.
+# default. Day-to-day changes belong in the **Plugins** page instead: the fields
+# the page owns are marked `.volatile()` in the plugin's Config schema, and a
+# save rewrites this row's `config` in the active profile's patch, applying
+# without a restart.
 
 - insert:
     - id: dsh-notify-long
@@ -40,6 +42,11 @@
             # Child agents are chatty: a subagent settling is not a finished
             # task unless you opt in.
             subagent: { enabled: false }
+            # A retried model request (a flapping connection, a provider hiccup)
+            # alerts by default, because the turn usually finishes anyway and
+            # would leave no trace. Keep the news but drop the tone with
+            # `retry: { enabled: true, channels: [email] }`.
+            retry: { enabled: true }
         # SMTP credentials come from the environment (`DSH_SMTP_PASSWORD`) and
-        # provider settings from `$DSH_HOME/settings.yaml` — never from this
-        # file, which is meant to be committed.
+        # the mailbox from the Plugins page — never from this file, which is
+        # meant to be committed.
