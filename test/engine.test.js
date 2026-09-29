@@ -298,6 +298,51 @@ test('the runtime raises an error alert once per fingerprint cooldown', () => {
   assert.equal(engine.events[0].urgency, 'error')
 })
 
+test('the runtime raises a model-retry alert for the scheduled retry only', () => {
+  const engine = { guard: new Guard(), events: [], raise: async (event) => { engine.events.push(event); return { delivered: true, channels: [], failures: [] } } }
+  const tracker = new Tracker()
+  const runtime = createRuntime({ tracker, engine, settings: () => ({ alerts: { kinds: {} }, language: 'en' }) })
+  runtime.noteSession({ sessionId: 'sess', cwd: '/repo' })
+  runtime.sessionEvent('sess', 'llm/retry', {
+    retryId: 'retry-a',
+    turn: 4,
+    step: 2,
+    provider: 'deepseek',
+    mode: 'normal',
+    policyKey: '["normal",5]',
+    retry: 2,
+    maxRetries: 5,
+    delayMs: 7_742,
+    failure: { message: 'Connection error.', code: 'CONNECTION', status: 502 },
+  })
+  // The retry actually starting is the same retry a moment later: no second alert.
+  runtime.sessionEvent('sess', 'llm/retry-started', { retryId: 'retry-a', turn: 4, step: 2, retry: 2 })
+
+  assert.equal(engine.events.length, 1)
+  const alert = engine.events[0]
+  assert.equal(alert.kind, 'retry')
+  assert.equal(alert.urgency, 'info', 'a retry is informational: the harness is recovering on its own')
+  assert.equal(alert.turn, 4)
+  assert.equal(alert.sessionId, 'sess')
+  assert.equal(alert.cwd, '/repo')
+  assert.match(alert.body, /Failure reason: Connection error\. \(CONNECTION HTTP 502\)/)
+  assert.match(alert.body, /Retry delay: 7\.7 s/)
+  assert.match(alert.body, /attempt 2 of 5 · provider: deepseek/)
+  assert.match(alert.hint, /retries by itself/)
+})
+
+test('the retry alert survives a failure payload with nothing in it', () => {
+  const engine = { guard: new Guard(), events: [], raise: async (event) => { engine.events.push(event); return { delivered: true, channels: [], failures: [] } } }
+  const tracker = new Tracker()
+  const runtime = createRuntime({ tracker, engine, settings: () => ({ alerts: { kinds: {} }, language: 'en' }) })
+  runtime.noteSession({ sessionId: 'sess' })
+  runtime.sessionEvent('sess', 'llm/retry', { retryId: 'retry-b', turn: 1, step: 1, provider: 'deepseek', mode: 'always', retry: 1, delayMs: 500 })
+  assert.equal(engine.events.length, 1)
+  assert.match(engine.events[0].body, /the provider returned no failure message/)
+  assert.match(engine.events[0].body, /Retry delay: 500 ms/, 'sub-second delays stay in milliseconds')
+  assert.match(engine.events[0].body, /attempt 1 \(no limit\)/, 'an unbounded policy has no maximum to report')
+})
+
 test('the runtime skips subagent completion until it is enabled', () => {
   const engine = { guard: new Guard(), raise: async () => ({ delivered: true, channels: [], failures: [] }), count: 0 }
   engine.raise = async () => { engine.count += 1; return { delivered: true, channels: [], failures: [] } }

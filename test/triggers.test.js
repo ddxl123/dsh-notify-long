@@ -114,6 +114,30 @@ function workedTurn(turn = 1) {
   ]
 }
 
+/**
+ * One `llm/retry` payload, exactly as `@deepseek-ai/dsh-llm-retry` appends it:
+ * the failure that caused the retry, how long the harness waits, and where the
+ * attempt sits in its chain.
+ *
+ * @param {object} [overrides] - fields to replace, for the second failure family
+ * @returns {any} the event payload
+ */
+function retryEvent(overrides = {}) {
+  return {
+    retryId: 'retry-a',
+    turn: 1,
+    step: 1,
+    provider: 'deepseek',
+    mode: 'normal',
+    policyKey: '["normal",5]',
+    retry: 2,
+    maxRetries: 5,
+    delayMs: 7_742,
+    failure: { message: 'Connection error.', code: 'CONNECTION' },
+    ...overrides,
+  }
+}
+
 test('a turn that did work and finished notifies once, with its reply', async () => {
   const driver = createDriver()
   const sent = await driver.turn('s1', workedTurn())
@@ -281,6 +305,126 @@ test('a second identical event inside the duplicate window is suppressed', async
   await driver.settle()
   assert.equal(first, 1)
   assert.equal(driver.sent.length, 1, 'the engine deduplicates the repeated event itself')
+})
+
+test('a retried model request notifies with its reason, delay and attempt', async () => {
+  const driver = createDriver()
+  const sent = await driver.turn('s15', [
+    ['turn/start', { turn: 1 }],
+    ['user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'summarize the logs' }] }],
+    ['step/start', { turn: 1, step: 1 }],
+    ['llm/retry', retryEvent()],
+    ['assistant/message', { message: { content: [{ type: 'text', text: 'the logs are quiet' }] } }],
+    ['turn/end', { turn: 1, reason: { kind: 'completed' } }],
+  ])
+
+  const retry = sent.find((entry) => entry.kind === 'retry')
+  assert.notEqual(retry, undefined, 'the retry is news on its own, before anything finishes')
+  assert.match(retry.title, /Retrying model request:/)
+  assert.match(retry.body, /Failure reason: Connection error\. \(CONNECTION\)/)
+  assert.match(retry.body, /Retry delay: 7\.7 s/)
+  assert.match(retry.body, /attempt 2 of 5/)
+  assert.match(retry.body, /provider: deepseek/)
+
+  const completed = sent.find((entry) => entry.kind === 'completed')
+  assert.notEqual(completed, undefined, 'recovering from a retry does not swallow the finished turn')
+  assert.match(completed.body, /the logs are quiet/)
+})
+
+test('a connection that keeps flapping does not mail once per retry', async () => {
+  // The unit of throttling is the failure family, not the event: three attempts
+  // inside one turn collapse into one alert through the duplicate window, and a
+  // retry in a *later* turn is still inside the fingerprint cooldown.
+  const driver = createDriver({ guard: { cooldownMs: 600_000 } })
+  const first = await driver.turn('s16', [
+    ['turn/start', { turn: 1 }],
+    ['step/start', { turn: 1, step: 1 }],
+    ['llm/retry', retryEvent({ retry: 1 })],
+    ['llm/retry', retryEvent({ retry: 2 })],
+    ['llm/retry', retryEvent({ retry: 3 })],
+    ['assistant/message', { message: { content: [{ type: 'text', text: 'eventually fine' }] } }],
+    ['turn/end', { turn: 1, reason: { kind: 'completed' } }],
+  ])
+  assert.equal(first.filter((entry) => entry.kind === 'retry').length, 1, 'one flapping connection is one alert')
+
+  const second = await driver.turn('s16', [
+    ['turn/start', { turn: 2 }],
+    ['step/start', { turn: 2, step: 1 }],
+    ['llm/retry', retryEvent({ turn: 2, retry: 1 })],
+    ['assistant/message', { message: { content: [{ type: 'text', text: 'still fine' }] } }],
+    ['turn/end', { turn: 2, reason: { kind: 'completed' } }],
+  ])
+  assert.deepEqual(second.filter((entry) => entry.kind === 'retry'), [], 'the same failure family is cooling down')
+  assert.equal(second.filter((entry) => entry.kind === 'completed').length, 1, 'the finished turn still alerts')
+})
+
+test('a different failure family alerts inside the same cooldown window', async () => {
+  const driver = createDriver({ guard: { cooldownMs: 600_000 } })
+  const sent = await driver.turn('s17', [
+    ['turn/start', { turn: 1 }],
+    ['step/start', { turn: 1, step: 1 }],
+    ['llm/retry', retryEvent({ retry: 1 })],
+    ['step/start', { turn: 1, step: 2 }],
+    ['llm/retry', retryEvent({
+      retryId: 'retry-b',
+      step: 2,
+      retry: 1,
+      delayMs: 1_000,
+      failure: { message: 'Rate limit exceeded.', code: 'RATE_LIMIT' },
+    })],
+    ['assistant/message', { message: { content: [{ type: 'text', text: 'back on track' }] } }],
+    ['turn/end', { turn: 1, reason: { kind: 'completed' } }],
+  ])
+  const retries = sent.filter((entry) => entry.kind === 'retry')
+  assert.equal(retries.length, 2, 'a second, unrelated failure is not silenced by the first one')
+  assert.match(retries[1].body, /Rate limit exceeded\./)
+  assert.match(retries[1].body, /Retry delay: 1 s/)
+})
+
+test('the retry kind is switchable like every other kind', async () => {
+  const driver = createDriver({ runtimeSettings: { alerts: { kinds: { retry: { enabled: false } } } } })
+  const sent = await driver.turn('s18', [
+    ['turn/start', { turn: 1 }],
+    ['step/start', { turn: 1, step: 1 }],
+    ['llm/retry', retryEvent()],
+    ['assistant/message', { message: { content: [{ type: 'text', text: 'done' }] } }],
+    ['turn/end', { turn: 1, reason: { kind: 'completed' } }],
+  ])
+  assert.deepEqual(sent.filter((entry) => entry.kind === 'retry'), [])
+  assert.equal(sent.filter((entry) => entry.kind === 'completed').length, 1)
+})
+
+test('the retry that actually starts is not a second alert', async () => {
+  // `llm/retry` schedules the wait and carries the reason; `llm/retry-started`
+  // follows the same retry once the wait elapsed. One retry, one alert.
+  const driver = createDriver()
+  const sent = await driver.turn('s19', [
+    ['turn/start', { turn: 1 }],
+    ['step/start', { turn: 1, step: 1 }],
+    ['llm/retry', retryEvent()],
+    ['llm/retry-started', { retryId: 'retry-a', turn: 1, step: 1, retry: 2 }],
+    ['assistant/message', { message: { content: [{ type: 'text', text: 'recovered' }] } }],
+    ['turn/end', { turn: 1, reason: { kind: 'completed' } }],
+  ])
+  assert.equal(sent.filter((entry) => entry.kind === 'retry').length, 1)
+})
+
+test('a retry that terminates in a failure alerts as both a retry and an error', async () => {
+  // The retry fingerprint is a different key from the terminal error's, so the
+  // earlier "it is retrying" line can never silence "it gave up".
+  const driver = createDriver({ guard: { cooldownMs: 600_000 } })
+  driver.sent.length = 0
+  driver.runtime.noteSession({ sessionId: 's20', cwd: '/tmp/project' })
+  driver.runtime.status({ sessionId: 's20', running: true })
+  driver.runtime.sessionEvent('s20', 'turn/start', { turn: 1 })
+  driver.runtime.sessionEvent('s20', 'step/start', { turn: 1, step: 1 })
+  driver.runtime.sessionEvent('s20', 'llm/retry', retryEvent())
+  driver.runtime.error({ sessionId: 's20', error: { message: 'Connection error.', code: 'CONNECTION' }, stage: 'step', turn: 1 })
+  driver.runtime.sessionEvent('s20', 'turn/end', { turn: 1, reason: { kind: 'error' } })
+  driver.runtime.status({ sessionId: 's20', running: false })
+  await driver.settle()
+
+  assert.deepEqual(driver.sent.map((entry) => entry.kind).sort(), ['error', 'retry'])
 })
 
 test('the tracker retains the verdict the deferred dispatch reads', async () => {

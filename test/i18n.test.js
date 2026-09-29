@@ -105,9 +105,51 @@ test('titles, bodies and labels speak the configured language', () => {
 
   assert.equal(kindLabel('completed', zh), '任务完成')
   assert.equal(kindLabel('question', zh), '需要你回答')
+  assert.equal(kindLabel('retry', zh), '模型请求重试')
   assert.equal(kindLabel('completed', en), 'task finished')
+  assert.equal(kindLabel('retry', en), 'model retry')
   assert.equal(urgencyLabel('action', zh), '需要处理')
   assert.equal(urgencyLabel('error', en), 'error')
+})
+
+test('a Chinese model-retry alert reads like the card that prompted it', () => {
+  const zh = messagesFor('zh')
+  assert.equal(zh.retryTitle('nightly build'), '模型请求重试：nightly build')
+  assert.equal(zh.retryFailure('Connection error.'), '失败原因：Connection error.')
+  assert.equal(zh.retryDelay(7_742), '重试延迟：7.7 秒')
+  assert.equal(zh.retryDelay(500), '重试延迟：500 毫秒')
+  assert.equal(zh.retryAttempt(2, 5), '第 2/5 次重试')
+  assert.equal(zh.retryAttempt(1, undefined), '第 1 次重试（不限次数）')
+
+  const en = messagesFor('en')
+  assert.equal(en.retryDelay(7_742), 'Retry delay: 7.7 s')
+  assert.equal(en.retryAttempt(2, 5), 'attempt 2 of 5')
+
+  // The mail a Chinese configuration produces names the retry in its subject and
+  // carries the failure the card showed.
+  const message = buildAlertMessage({
+    event: {
+      kind: 'retry',
+      title: zh.retryTitle('nightly build'),
+      body: [zh.retryFailure('Connection error. (CONNECTION)'), zh.retryDelay(7_742), zh.retryAttempt(2, 5)].join('\n'),
+      hint: zh.hintRetryAuto,
+      sessionId: 'session-retry',
+      at: Date.UTC(2026, 0, 2, 3, 4, 5),
+      urgency: 'info',
+    },
+    settings: {
+      language: 'zh',
+      email: resolveEmailSettings({ email: { user: '123456789@qq.com', pass: 'code', subjectPrefix: '[DSH]' } }),
+    },
+  })
+  assert.notEqual(message, undefined)
+  assert.equal(message.subject, '[DSH] 模型请求重试 - 模型请求重试：nightly build')
+  const text = decodeBody(message.raw)
+  assert.match(text, /事件: 模型请求重试/)
+  assert.match(text, /失败原因：Connection error\. \(CONNECTION\)/)
+  assert.match(text, /重试延迟：7\.7 秒/)
+  assert.match(text, /第 2\/5 次重试/)
+  assert.match(text, /下一步: 这是 harness 的自动重试/)
 })
 
 test('a Chinese alert renders a Chinese subject and body', () => {
