@@ -25,6 +25,27 @@ Notable changes to `dsh-notify-long`. This project follows
   `retry: { enabled: true, channels: [email] }` to keep the news without the
   tone. `retry` is the chattiest kind on an unreliable network.
 
+### Changed
+
+- **The harness peers are imported the official way** (DSH 0.2 *profile
+  resolution*). `@deepseek-ai/schemastery` and `@deepseek-ai/dsh-tools` are
+  static imports declared as required `peerDependencies`, and the literal
+  `defineTool` fallback is gone. A dsh launcher computes one runtime resolution
+  per process and routes a linked plugin's peer-named imports to the running
+  installation's own copy, so a `link:` install resolves both without anything
+  being linked into this checkout — while a physical copy beside the source
+  would *outrank* that routing and shadow the runtime's copy. Consequently
+  `scripts/install.mjs` no longer links peers, and
+  `dsh plugin --profile <p> add <this package>` is the whole install.
+- The packages only the tests import — `@deepseek-ai/dsh-settings`,
+  `@deepseek-ai/cordis`, `@deepseek-ai/dsh-client-connection`,
+  `@deepseek-ai/dsh-user-questions`, `@deepseek-ai/dsh-llm-retry` — moved from
+  `peerDependencies` to `devDependencies`. `peerDependencies` now names exactly
+  what `src/` imports from the runtime.
+- An install that cannot resolve the peers now fails its row instead of running
+  with row validation off and literal tool definitions; the `notify_*` tools are
+  always built by `defineTool`.
+
 ### Internal
 
 - `test/retry-contract.test.js` drives the real `@deepseek-ai/dsh-llm-retry`

@@ -6,20 +6,20 @@
  * already knows how to install it: it runs pnpm in the profile directory and
  * appends this package to `dsh.profile.bundles`, which is what makes the plugin
  * row in `cordis.patch.yml` load. This script is therefore a thin wrapper for
- * the one thing that command cannot do itself —
+ * that one command —
  *
  *   dsh plugin --profile web add /path/to/dsh-notify-long
- *   node scripts/link-harness-deps.mjs
  *
- * — pnpm runs no lifecycle scripts for a local `link:` dependency, so the
- * harness peers this package imports (`@deepseek-ai/schemastery` and
- * `@deepseek-ai/dsh-tools`) are not established by the install. Without them the
- * plugin still loads, but the composition row goes unvalidated and its tools use
- * fallback definitions; linking them is what makes the install complete.
+ * — with `--dry-run` to see it first and `--uninstall` to reverse it.
  *
- * Nothing here edits a profile file by hand. The row lives in this repository's
- * `cordis.patch.yml` and reaches the profile as a bundle layer, so installing
- * twice, or installing and then re-running this script, is a no-op.
+ * Nothing here edits a profile file by hand, and nothing here links packages
+ * into this checkout: the two packages the plugin imports
+ * (`@deepseek-ai/schemastery` and `@deepseek-ai/dsh-tools`) ship with dsh itself,
+ * and the launcher's profile resolution serves them from the running
+ * installation to every profile plugin — including one linked from outside the
+ * profile. Making them resolvable beside this source, which
+ * `scripts/link-harness-deps.mjs` does, is only needed to run the test suite
+ * under plain Node.
  *
  * Usage:
  *   node scripts/install.mjs [--profile web] [--uninstall] [--dry-run] [--dsh <path>]
@@ -30,8 +30,6 @@
 import { spawnSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-
-import { linkHarnessDeps } from './link-harness-deps.mjs'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const pluginName = 'dsh-notify-long'
@@ -92,8 +90,7 @@ if (options.help) {
   --dsh           the dsh executable to use (default: $DSH_BIN, then "dsh")
 
 Equivalent, without this wrapper:
-  dsh plugin --profile ${options.profile} add ${repo}
-  node scripts/link-harness-deps.mjs`)
+  dsh plugin --profile ${options.profile} add ${repo}`)
   process.exit(0)
 }
 
@@ -106,7 +103,6 @@ const args = ['plugin', '--profile', options.profile, options.uninstall ? 'remov
 
 if (options.dryRun) {
   console.log(`${options.dsh} ${args.join(' ')}`)
-  if (!options.uninstall) console.log('node scripts/link-harness-deps.mjs')
   console.log('\ndry run: nothing was written')
   process.exit(0)
 }
@@ -126,18 +122,8 @@ if (options.uninstall) {
   process.exit(0)
 }
 
-// Only meaningful for a `link:` install, where pnpm runs no lifecycle scripts.
-// For a git or npm install the package's own `prepare` already did this, and the
-// script reports "already resolvable" and changes nothing.
-const peers = await linkHarnessDeps()
-if (peers.linked.length === 0 && peers.missing.length === 0) {
-  console.log('\nharness peers already resolvable.')
-} else if (peers.from === undefined) {
-  console.error(`\ndsh-notify-long: could not find a dsh installation providing: ${peers.missing.join(', ')}`)
-  console.error('dsh-notify-long: the plugin will load without config validation and with fallback tool definitions.')
-  console.error('dsh-notify-long: fix it with: node scripts/link-harness-deps.mjs --from /path/to/node_modules')
-} else {
-  console.log(`\nlinked harness peers from ${peers.from}: ${peers.linked.join(', ')}`)
-}
-
+// Nothing to link: the two packages this plugin imports ship with dsh, and the
+// launcher's profile resolution serves them from the running installation.
+// `node scripts/link-harness-deps.mjs` is only for running this repository's
+// tests under plain Node.
 console.log(`\nRestart the profile to load the plugin:  ${options.dsh} --profile ${options.profile}`)

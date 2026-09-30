@@ -16,6 +16,9 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
+import Schema from '@deepseek-ai/schemastery'
+import { defineTool } from '@deepseek-ai/dsh-tools'
+
 import { deepMerge, describeError, resolveVolatile, sanitizeLine } from '../lib/util.js'
 import { activeChannels, Guard } from '../lib/core/policy.js'
 import { ActivityLog } from '../lib/core/activity.js'
@@ -36,71 +39,19 @@ export const name = 'dsh-notify-long'
 export const inject = ['agents', 'tools']
 
 /**
- * Optional peer modules. Resolved through `await import` so a deployment
- * without them degrades the affected capability (configuration defaults,
- * `defineTool` validation) instead of failing the whole composition.
- */
-const schemastery = await optionalImport('@deepseek-ai/schemastery')
-const defineToolModule = await optionalImport('@deepseek-ai/dsh-tools')
-
-/**
- * Import an optional peer dependency.
- *
- * @param {string} specifier - bare module specifier
- * @returns {Promise<any | undefined>} the module namespace, or undefined when it cannot be resolved
- */
-async function optionalImport(specifier) {
-  try {
-    return await import(specifier)
-  } catch {
-    return undefined
-  }
-}
-
-/**
  * Composition entry schema.
  *
  * Cordis validates a row's `config` with `Config['~standard'].validate(...)`
- * *before* `apply` runs, so whatever this module exports must be a Standard
- * Schema or nothing at all. Two shapes were possible and only one is safe:
- *
- * - a real schema, when `@deepseek-ai/schemastery` resolves, so the harness gets
- *   validation and the documented defaults;
- * - `undefined`, when it does not, which makes Cordis skip config validation
- *   entirely.
- *
- * A plain function is NOT a substitute. It has no `~standard`, so Cordis reads
- * `Config['~standard'].validate` off `undefined` and the whole plugin tree fails
- * to load — a degraded capability turning into a dead harness. `defaultsFor`
- * still applies every default inside `apply`, so the plugin behaves identically
- * either way; only validation is lost.
- *
- * Resolution is a peer-dependency question, not a code one: Node resolves a
- * linked package's bare imports from its *real* path, so an out-of-tree plugin
- * cannot see the harness's `profiles/node_modules` fallback unless the package
- * is also resolvable from its own directory. Declaring the peer dependency (and
- * installing it, or using a published one) is what makes the schema branch
- * reachable.
+ * *before* `apply` runs, so `Config` must be a Standard Schema. `Schema` is
+ * `@deepseek-ai/schemastery`, a package shipped with dsh: the launcher's profile
+ * resolution serves it from the running installation to every profile plugin,
+ * including one linked from outside the profile — a plugin declares the shipped
+ * packages it imports in `peerDependencies` and Node's lookup for that name is
+ * routed to the installation's own copy. That is also why this module imports
+ * its peers statically and unmapped: an install that cannot resolve them is a
+ * broken install, and a broken row is reported instead of silently degraded.
  */
-export const Config = resolveConfigSchema()
-
-/**
- * Build the config schema, or `undefined` when no schema module is available.
- *
- * @returns {any} a Standard Schema, or undefined to let Cordis skip validation
- */
-function resolveConfigSchema() {
-  const z = schemastery?.default ?? schemastery?.z ?? schemastery
-  if (z === undefined || typeof z.object !== 'function') return undefined
-  try {
-    const schema = buildConfigSchema(z)
-    // Guard the exact contract Cordis reads, so a future shape change degrades to
-    // "no validation" instead of a load failure.
-    return typeof schema?.['~standard']?.validate === 'function' ? schema : undefined
-  } catch {
-    return undefined
-  }
-}
+export const Config = buildConfigSchema(Schema)
 
 /**
  * Build the schemastery configuration schema. The harness validates a row's
@@ -551,6 +502,10 @@ function subscribe(ctx, log, label, register) {
 /**
  * Register the model-facing `notify_*` tools.
  *
+ * `ctx.tools.register` owns the registration on this plugin's context, so
+ * unloading the plugin (or a profile patch that disables it) removes the tools
+ * with it — the same shape every shipped tool plugin uses.
+ *
  * @param {any} ctx - the plugin context
  * @param {object} deps - tool dependencies
  * @returns {void}
@@ -562,24 +517,8 @@ function registerTools(ctx, deps) {
     defineStatusTool(deps),
     defineFlushTool(deps),
   ]) {
-    try {
-      ctx.tools.register(tool)
-    } catch (error) {
-      deps.log.warn(`could not register the ${tool.name} tool (${describeError(error)})`)
-    }
+    ctx.tools.register(tool)
   }
-}
-
-/**
- * Build one tool definition through the harness `defineTool` when it is
- * resolvable, or a shape-compatible literal when it is not.
- *
- * @param {any} options - definition options
- * @returns {any} the registry-ready definition
- */
-function defineHarnessTool(options) {
-  if (typeof defineToolModule?.defineTool === 'function') return defineToolModule.defineTool(options)
-  return { ...options, output: { schema: { type: 'json' }, render: options.output.render } }
 }
 
 /**
@@ -590,7 +529,7 @@ function defineHarnessTool(options) {
  */
 function defineNotifyTool(deps) {
   const { engine, tracker } = deps
-  return defineHarnessTool({
+  return defineTool({
     name: 'notify_user',
     description: [
       'Send the operator an out-of-band notification (system sound, desktop banner, email) without ending the turn.',
@@ -674,7 +613,7 @@ function defineNotifyTool(deps) {
  */
 function defineTestTool(deps) {
   const { engine, settingsNow, emailConfigured, outbox } = deps
-  return defineHarnessTool({
+  return defineTool({
     name: 'notify_test',
     description: 'Send a test notification over the configured channels (system sound, desktop banner, email) and report which ones worked. Use it to verify or debug the operator\'s alert setup.',
     parameters: {
@@ -740,7 +679,7 @@ function defineTestTool(deps) {
  */
 function defineStatusTool(deps) {
   const { engine, settingsNow, outbox, activity } = deps
-  return defineHarnessTool({
+  return defineTool({
     name: 'notify_status',
     description: 'Report the operator notification setup: which channels are active, whether email is configured, quiet hours, how many alerts are queued, and the most recent delivery results. Secrets are never included.',
     parameters: {},
@@ -802,7 +741,7 @@ function defineStatusTool(deps) {
  */
 function defineFlushTool(deps) {
   const { engine, outbox } = deps
-  return defineHarnessTool({
+  return defineTool({
     name: 'notify_flush',
     description: 'Retry every notification still waiting in the durable outbox (for example after fixing the email password) and report the outcome.',
     parameters: {},

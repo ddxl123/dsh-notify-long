@@ -53,15 +53,14 @@ This package declares `dsh.bundle.patch`, so it installs like any other profile 
 dsh plugin --profile web add dsh-notify-long
 ```
 
-That is the whole install — no build step and no runtime dependencies. The harness peers this package imports are already reachable one level above the profile, so nothing else is required; see ["Harness peers"](#harness-peers) for the one case that differs.
+That is the whole install — no build step, no runtime dependencies, and nothing to link into the checkout. The two packages this plugin imports (`@deepseek-ai/schemastery`, `@deepseek-ai/dsh-tools`) ship with dsh, and the launcher's profile resolution serves them from the running installation; see ["Harness peers"](#harness-peers).
 
-To work from a checkout instead, clone it and add the path (`link:`, which needs the extra peer step below):
+To work from a checkout instead, clone it and add the path (`link:` — the install command is identical):
 
 ```bash
 git clone https://github.com/ddxl123/dsh-notify-long.git
 cd dsh-notify-long
 dsh plugin --profile web add .
-node scripts/link-harness-deps.mjs     # see "Harness peers" below
 ```
 
 `dsh plugin` runs pnpm in the profile directory and then appends this package to
@@ -86,27 +85,29 @@ dsh plugin --profile web remove dsh-notify-long
 > **`add .` means this checkout.** `dsh plugin` anchors a relative path to the directory you invoke it from, so it resolves to the repository, not the profile. An absolute path works identically:
 > `dsh plugin --profile web add /path/to/dsh-notify-long`.
 >
-> For another profile (`headless`, …) pass its name. `node scripts/install.mjs` runs both commands above in one step; `--dry-run` previews it and `--uninstall` reverses it.
+> For another profile (`headless`, …) pass its name. `node scripts/install.mjs` wraps that one command; `--dry-run` previews it and `--uninstall` reverses it.
 
 ### Harness peers
 
-`@deepseek-ai/schemastery` and `@deepseek-ai/dsh-tools` are **peer dependencies**: they belong to your harness installation, not to this package. Node resolves a package's bare imports from its **real** path, following symlinks, so whether they are found depends on how the plugin was installed:
+`@deepseek-ai/schemastery` (the composition row's config schema) and `@deepseek-ai/dsh-tools` (`defineTool`) are packages **shipped with dsh**: they belong to the running harness, not to this package. The plugin imports them statically and declares them in `peerDependencies` — that declaration is the official contract, and it is also what makes resolution work:
 
-| Install | Peers resolve? | What to do |
-| --- | --- | --- |
-| `dsh plugin --profile web add dsh-notify-long` (npm) | yes — the package is a real directory inside the profile, and Node walks up to the harness packages one level above it | nothing |
-| `git clone` + `add .` (a `link:` symlink into your checkout) | no — resolution starts from the checkout, outside the profile tree | run the link script once |
+- before a profile mounts its rows, the launcher computes one immutable **runtime resolution** (installation anchor plus the ordered bundle dependency graphs) holding every shipped package name;
+- a directory symlinked into the profile from outside it is a **linked root**, and imports issued from inside it get *peer-aware ancestor lookup*: at each `D/node_modules` position, a name that `D/package.json` declares as a peer is routed to the runtime's own copy (for this package, `D` is this repository root, so its declarations apply);
+- nothing therefore needs to be linked into this checkout, and nothing should be: a physical copy outranks a peer declaration, so linking one in would shadow the runtime's copy and drift from the app on upgrade;
+- application-owned profiles (such as the Electron app's `desktop`) use the same resolution, which never writes to your `node_modules`.
 
-So only a checkout install needs the extra step:
+`peerDependencies` is also where dsh's compatibility check reads from: before importing a plugin it matches the declared `@deepseek-ai/dsh-*` ranges against the running version and skips a bundle that does not match. Upstream documentation: the `@deepseek-ai/dsh-app-boot` README ("Linked directories", "One runtime resolution", "Application-owned profiles").
+
+**The only reason to run `scripts/link-harness-deps.mjs` is this repository's test suite.** `node --test` is a plain Node process with no profile resolution, so the peers have to exist beside the source:
 
 ```bash
-node scripts/link-harness-deps.mjs                        # finds your harness automatically
+node scripts/link-harness-deps.mjs                        # finds your dsh installation automatically
 node scripts/link-harness-deps.mjs --from /path/to/node_modules
 ```
 
-It is safe to re-run, and says so when they already resolve. pnpm runs no lifecycle scripts for a local `link:` dependency, which is why the npm install has nothing to do here and the checkout install does.
+It is safe to re-run, and says so when they already resolve. The same step links the **devDependencies** that only tests import: `@deepseek-ai/dsh-settings` (the settings contract), `@deepseek-ai/cordis`, `@deepseek-ai/dsh-client-connection` and `@deepseek-ai/dsh-user-questions` (the integration tests that mount the real plugin against the real Connection and user-question services), and `@deepseek-ai/dsh-llm-retry` (the retry contract). At runtime those services are injected by the running harness, never imported.
 
-Without them the plugin still loads, and only two things change: the composition row goes unvalidated (the documented defaults still apply), and the `notify_*` tools use plain definitions instead of `defineTool`. The same step links the peers that only tests import — `@deepseek-ai/dsh-settings` (the settings contract), and `@deepseek-ai/cordis`, `@deepseek-ai/dsh-client-connection` and `@deepseek-ai/dsh-user-questions` (the integration tests that mount the real plugin against the real Connection and user-question services). At runtime those services are injected by the running harness, never imported.
+The plugin declares no `dependencies` on shipped packages and has no degraded branch: if a peer cannot be resolved the install is broken, and that row is reported instead of running half a plugin.
 
 ## Configure
 
@@ -379,7 +380,7 @@ Usual causes: a login password instead of an app password, port 465 blocked by a
 ## Development
 
 ```bash
-npm run link-deps          # link the harness peers so the boot-level tests run
+npm run link-deps          # link the harness peers beside the source, for the boot-level tests
 node --test test/          # 186 tests: policy, rendering, SMTP (local fake server), queue, engine,
                            # activity log, card endpoints, message catalogue, boot-level mount,
                            # browser-bundle card, the trigger spec, a real Cordis/Connection
@@ -400,8 +401,8 @@ lib/runtime/handlers.js      Harness events → alert decisions (pure, unit-test
 lib/runtime/api.js           The settings card's route: status, activity log, test, flush, clear
 lib/runtime/selftest.js      One channel self-test shared by `notify_test` and the card's button
 cordis.patch.yml             The bundle patch `dsh plugin` puts on the profile's layer stack
-scripts/install.mjs          Wrapper: `dsh plugin --profile add` plus the harness-peer link
-scripts/link-harness-deps.mjs  Makes the harness peers resolvable from this package
+scripts/install.mjs          Wrapper around `dsh plugin --profile add`
+scripts/link-harness-deps.mjs  Test-only: makes the harness peers resolvable from this package
 scripts/test-alert.mjs       Channel self-check outside the harness
 test/                        Unit tests, a fake SMTP server, a fake-harness mount test, the browser bundle's card
                              tests, the trigger spec, and integration tests against the real harness

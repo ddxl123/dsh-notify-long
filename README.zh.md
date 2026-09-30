@@ -58,15 +58,14 @@
 dsh plugin --profile web add dsh-notify-long
 ```
 
-安装到此为止：没有构建步骤，也没有运行时依赖。插件 import 的 harness peer 包位于 profile 上一级，本来就能解析到，所以不需要额外操作；只有下面「harness peer 依赖」里那一种装法例外。
+安装到此为止：没有构建步骤，也没有运行时依赖。插件 import 的两个包（`@deepseek-ai/schemastery`、`@deepseek-ai/dsh-tools`）是 dsh 自带的，由启动器的 profile 解析从**正在运行的安装**里供给，所以不需要在仓库里额外链任何东西——理由见下方「harness peer 依赖」。
 
-想直接改源码的话，改成克隆本仓库、再添加路径（`link:` 装法，需要多做一步 peer 链接）：
+想直接改源码的话，改成克隆本仓库、再添加路径（`link:` 装法，安装命令完全一样）：
 
 ```bash
 git clone https://github.com/ddxl123/dsh-notify-long.git
 cd dsh-notify-long
 dsh plugin --profile web add .
-node scripts/link-harness-deps.mjs     # 见下方「harness peer 依赖」
 ```
 
 `dsh plugin` 会在 profile 目录里跑 pnpm，然后把这个包追加进 `dsh.profile.bundles`；
@@ -90,27 +89,29 @@ dsh plugin --profile web remove dsh-notify-long
 > **`add .` 指的是本仓库。** `dsh plugin` 把相对路径锚定在你执行命令的目录上，所以它解析到的是仓库而不是 profile；绝对路径效果完全相同：
 > `dsh plugin --profile web add /path/to/dsh-notify-long`。
 >
-> 其它 profile（`headless` 等）：把 `--profile web` 换成对应名字即可。`node scripts/install.mjs` 把上面两条命令合成一步；加 `--dry-run` 先看要做什么，`--uninstall` 反向卸载。
+> 其它 profile（`headless` 等）：把 `--profile web` 换成对应名字即可。`node scripts/install.mjs` 就是这条命令的包装；加 `--dry-run` 先看要做什么，`--uninstall` 反向卸载。
 
 ### harness peer 依赖
 
-`@deepseek-ai/schemastery` 和 `@deepseek-ai/dsh-tools` 是 **peer 依赖**：它们属于你的 harness 安装，不属于本包。Node 解析裸导入时走的是包的**真实路径**（会跟随软链），所以能否找到它们取决于装法：
+`@deepseek-ai/schemastery`（组合条目的配置 schema）和 `@deepseek-ai/dsh-tools`（`defineTool`）是**随 dsh 一起发布的包**：它们属于运行中的 harness，不属于本包。插件对它们做**静态 import**，并在 `package.json` 的 `peerDependencies` 里声明——这正是官方契约，也是解析能成立的原因：
 
-| 装法 | peer 能解析吗 | 要做什么 |
-| --- | --- | --- |
-| `dsh plugin --profile web add dsh-notify-long`（npm） | 能——包在 profile 里是真实目录，Node 向上走到上一级就是 harness 包 | 什么都不用做 |
-| `git clone` + `add .`（`link:` 软链到你的仓库） | 不能——解析起点在 profile 树之外的仓库 | 执行一次链接脚本 |
+- 启动器在 profile 装载前算出一张**唯一的运行期解析表**（安装锚点 + 有序 bundle 的依赖图），并把 `@deepseek-ai/*` 这些名字登记在案；
+- 一个被 `link:` 到 profile 的外部目录是 **linked root**，从它里面发出的导入走「peer 感知的祖先查找」：在每一级 `D/node_modules` 位置，只要 `D/package.json` 的 `peerDependencies` 里有这个名字，Node 的查找就被**路由到运行期那份拷贝**（D 就是本包根目录，所以本包声明的 peer 生效）；
+- 因此**不需要**在本仓库里链软链，也不该链：物理副本的优先级高于 peer 声明，链进去反而会遮蔽运行期那份，并跟着 app 升级而失配；
+- 应用自有的 profile（例如 Electron 桌面端的 `desktop`）用同一套解析，且解析不会改动你的 `node_modules`。
 
-所以只有克隆装法需要多做这一步：
+`peerDependencies` 同时也是 dsh 的兼容性检查入口：装载前它会拿 `@deepseek-ai/dsh-*` 的声明范围去比对运行版本，不匹配的 bundle 会被跳过。上游文档：`@deepseek-ai/dsh-app-boot` 的 README（"Linked directories"、"One runtime resolution"、"Application-owned profiles"）。
+
+**唯一需要 `scripts/link-harness-deps.mjs` 的场合是跑本仓库的测试**：`node --test` 是普通 Node 进程，没有 profile 解析，所以需要把 peer 物化到源码旁边：
 
 ```bash
-node scripts/link-harness-deps.mjs                        # 自动寻找你的 harness
+node scripts/link-harness-deps.mjs                        # 自动寻找你的 dsh 安装
 node scripts/link-harness-deps.mjs --from /path/to/node_modules
 ```
 
-重复执行是安全的；已经能解析时会直接告诉你无需处理。pnpm 对本地 `link:` 依赖不跑生命周期脚本，所以 npm 装法本来就无事可做，而克隆装法需要手动补这一步。同一步也会链上 `@deepseek-ai/dsh-settings`，它只被设置契约测试用到（运行时的 `dsh-settings` 由 harness 自己注入）。
+反复执行是安全的，已经能解析时会直接告诉你无需处理。同一条命令还会链上只有测试会导入的 **devDependencies**：`@deepseek-ai/dsh-settings`（设置契约测试）、`@deepseek-ai/cordis`、`@deepseek-ai/dsh-client-connection` 与 `@deepseek-ai/dsh-user-questions`（集成测试：把真实插件分别挂到真实 Connection 服务与真实提问服务上）、`@deepseek-ai/dsh-llm-retry`（重试契约测试）。运行时这些服务由 harness 注入，插件代码本身从不导入它们。
 
-即使没有这两个包，插件依然能加载，只有两点变化：组合条目不做过校验（文档里的默认值照常生效），以及 `notify_*` 工具改用普通定义而不是 `defineTool`。同一条命令还会链上只有测试会导入的几个 peer：`@deepseek-ai/dsh-settings`（设置契约测试）、`@deepseek-ai/cordis`、`@deepseek-ai/dsh-client-connection` 与 `@deepseek-ai/dsh-user-questions`（集成测试：把真实插件分别挂到真实 Connection 服务与真实提问服务上）。运行时这些服务由 harness 注入，插件代码本身从不导入它们。
+插件不声明对自带包的 `dependencies`，也没有任何降级分支：解析不到 peer 就是安装坏了，那一行会被明确报出来，而不是带着半个插件继续跑。
 
 ## 配置
 
@@ -392,7 +393,7 @@ node scripts/test-alert.mjs --channel email --trace   # 打印 SMTP 会话，凭
 ## 开发
 
 ```bash
-npm run link-deps          # 链好 harness peer 依赖，boot 级测试才会真正跑
+npm run link-deps          # 把 harness peer 链到源码旁边，boot 级测试才会真正跑
 node --test test/          # 186 个测试：策略、渲染、SMTP（本地假服务器）、队列、引擎、
                            # 活动日志、卡片接口、消息文案表、boot 级挂载、浏览器端卡片、
                            # 触发规则规格，以及真实 Cordis/Connection 传输层与真实提问服务的集成测试
@@ -412,8 +413,8 @@ lib/runtime/handlers.js   harness 事件 → 提醒决策（纯函数，便于�
 lib/runtime/api.js        卡片用的路由：状态、活动日志、发送测试、重试队列、清空日志
 lib/runtime/selftest.js   通道自检实现，`notify_test` 与卡片按钮共用同一份
 cordis.patch.yml          `dsh plugin` 放进 profile 层栈的 bundle 补丁
-scripts/install.mjs       包装脚本：`dsh plugin --profile add` 加 harness peer 链
-scripts/link-harness-deps.mjs  让本包能解析到 harness peer 依赖
+scripts/install.mjs       包装脚本：`dsh plugin --profile add`
+scripts/link-harness-deps.mjs  只为测试：把 harness peer 链到本包旁边（运行时不经过它）
 scripts/test-alert.mjs    脱离 harness 的通道自检
 test/                     单元测试 + 假 SMTP 服务器 + 假 harness 挂载测试 + 浏览器端卡片测试
                           + 触发规则规格 + 真实 harness 包集成测试（Connection 传输层、提问 waterfall、重试策略）

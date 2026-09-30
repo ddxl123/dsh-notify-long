@@ -58,32 +58,15 @@
     "check": "node --check src/index.js && node --check client/index.js && node --test test/"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-settings": "^0.2.0-rc.1",
     "@deepseek-ai/dsh-tools": "^0.2.0-rc.1",
-    "@deepseek-ai/schemastery": "^3.18.2",
-    "@deepseek-ai/dsh-client-connection": "^0.2.0-rc.1",
-    "@deepseek-ai/dsh-user-questions": "^0.2.0-rc.1"
+    "@deepseek-ai/schemastery": "^3.18.2"
   },
-  "peerDependenciesMeta": {
-    "@deepseek-ai/cordis": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-settings": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-tools": {
-      "optional": true
-    },
-    "@deepseek-ai/schemastery": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-client-connection": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-user-questions": {
-      "optional": true
-    }
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-client-connection": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-llm-retry": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-settings": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-user-questions": "^0.2.0-rc.1"
   },
   "dsh": {
     "bundle": {

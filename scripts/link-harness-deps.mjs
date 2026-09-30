@@ -1,25 +1,23 @@
 #!/usr/bin/env node
 /**
- * Make this package's harness peer dependencies resolvable from its own
- * directory.
+ * Make the harness packages this package imports resolvable from its own
+ * directory, for the test suite.
  *
- * ## Why this is necessary
+ * ## Why this is only about tests
  *
- * The plugin imports `@deepseek-ai/schemastery` (for the composition-row config
- * schema) and `@deepseek-ai/dsh-tools` (for `defineTool`). Those are peer
- * dependencies: they belong to the harness installation, not to this package.
+ * The plugin imports `@deepseek-ai/schemastery` (the composition-row config
+ * schema) and `@deepseek-ai/dsh-tools` (`defineTool`) statically, and declares
+ * both in `peerDependencies`. At runtime the launcher's **profile resolution**
+ * serves them from the running dsh installation: for a plugin linked into a
+ * profile, an import whose name the importing package declares as a peer is
+ * routed to the installation's own copy, so no `node_modules` beside this source
+ * is needed and nothing shadows the runtime's copy. `dsh plugin --profile <p>
+ * add <this package>` is therefore the whole install.
  *
- * Node resolves a package's bare imports from its **real** path, following
- * symlinks. A harness-managed profile therefore cannot help here: `dsh plugin`
- * links an out-of-tree plugin at `<profile>/node_modules/<name>`, but resolution
- * from the plugin's real directory walks up *that* tree instead and never sees
- * it. Linking the peers in beside the source is what makes them reachable.
- *
- * The plugin is written to survive their absence — `Config` becomes `undefined`
- * so Cordis skips row validation, and tool definitions fall back to a
- * shape-compatible literal — so a deployment that resolves the peers some other
- * way (a published install, a workspace, a bundler) needs nothing from this
- * script, and a missing harness is a warning rather than a failed install.
+ * A plain Node process has no profile resolution. `node --test` therefore needs
+ * the peers physically beside this source, which is what this script provides —
+ * point it at your dsh installation's `node_modules` (or let it find one) and
+ * the boot-level tests run against the same packages the harness runs.
  *
  * Resolution order:
  *   1. `node_modules/@deepseek-ai/*` inside this package, when already correct;
@@ -37,23 +35,23 @@ import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /**
- * Peer packages this package imports.
+ * Packages the test suite needs beside this source.
  *
- * The plugin itself imports `schemastery` (config schema) and `dsh-tools`
- * (`defineTool`); the settings contract test also imports `dsh-settings` for
+ * `schemastery` and `dsh-tools` are the plugin's runtime peers: the module
+ * imports them statically, so every boot-level test needs them resolvable.
+ *
+ * The rest are dev-only. The settings contract test imports `dsh-settings` for
  * its secret redaction, which is the same module the running harness injects.
- *
- * `cordis`, `dsh-client-connection` and `dsh-user-questions` are linked for the
+ * `cordis`, `dsh-client-connection` and `dsh-user-questions` belong to the
  * integration tests: the transport test mounts the real plugin into a real
  * runtime and posts to the route the settings card uses, and the question test
  * asks a real question through the real waterfall service. Nothing in `src/` or
  * `lib/` imports them: a Cordis plugin is handed its context, the card's route
  * is registered through the injected `connection` service, and questions arrive
- * as events.
- *
- * `dsh-llm-retry` is linked for the same reason: the `retry` kind is a claim
- * about an event the harness appends, so the contract test drives the real retry
- * policy and alerts on the payload it produced rather than on a fixture.
+ * as events. `dsh-llm-retry` is linked for the same reason: the `retry` kind is
+ * a claim about an event the harness appends, so the contract test drives the
+ * real retry policy and alerts on the payload it produced rather than on a
+ * fixture.
  */
 export const PEERS = ['schemastery', 'dsh-tools', 'dsh-settings', 'cordis', 'dsh-client-connection', 'dsh-user-questions', 'dsh-llm-retry']
 
@@ -375,12 +373,12 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
   if (runtime.linked.length === 0 && runtime.missing.length === 0 && runtime.stale.length === 0) {
     process.stdout.write('harness peers already resolvable; nothing to do\n')
   } else if (runtime.from === undefined) {
-    // Not fatal: without the peers the plugin still loads, with row validation
-    // off and literal tool definitions. Say so, and do not fail an install.
+    // Not fatal for a deployment — the launcher serves the peers from the
+    // running installation — but this checkout cannot run its boot-level tests.
     process.stderr.write(
       `dsh-notify-long: could not find a dsh installation providing: ${runtime.missing.join(', ')}\n`
-      + 'dsh-notify-long: the plugin will load without config validation and with fallback tool definitions.\n'
-      + 'dsh-notify-long: point at an installation explicitly to fix that:\n'
+      + 'dsh-notify-long: the plugin still runs under dsh, which serves these from its own installation;\n'
+      + 'dsh-notify-long: only the tests that import src/index.js need them here. Point at an installation:\n'
       + '  node scripts/link-harness-deps.mjs --from /path/to/node_modules\n',
     )
   } else {
