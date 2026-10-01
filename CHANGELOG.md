@@ -51,6 +51,14 @@ Notable changes to `dsh-notify-long`. This project follows
     lifted the moment unfinished work reappears.
 - `stallAfterMs` (default `600000`) as composition configuration.
 
+### Removed
+
+- The unused dispatch-time tool observer (`runtime.toolCall`) and the question
+  text it remembered, together with `runtime.lastQuestion`. Tool *calls* are
+  counted from the durable `tool/call` session event, so an observer on the
+  `tools/execute` waterfall would have counted every call a second time; nothing
+  in `src/`, `lib/`, `client/` or the tests called any of the removed methods.
+
 ### Changed
 
 - **A plan review is its own kind.** `exit_plan_mode` asks through the same
@@ -69,8 +77,9 @@ Notable changes to `dsh-notify-long`. This project follows
 - **The plan itself reaches the alert.** `exit_plan_mode` carries the plan as the
   question's `detail`, which the alert now passes through: the email renders it in
   full while the banner keeps the title and options.
-- **A stall alert can name the last tool.** The runtime records the tool name from
-  every `tools/result`, which is what the stall body quotes.
+- **A stall alert can name the last tool.** The name comes from the durable
+  `tool/call` session event the agent loop appends before dispatching, and from
+  `tools/result` as a second, process-local source.
 
 - **The harness peers are imported the official way** (DSH 0.2 *profile
   resolution*). `@deepseek-ai/schemastery` and `@deepseek-ai/dsh-tools` are

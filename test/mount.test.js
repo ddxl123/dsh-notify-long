@@ -86,6 +86,12 @@ bootTests('apply() mounts against the real peer packages and registers its tools
     'user-questions/request',
     'approval/request',
     'subagent/end',
+    'agent/assistant-stream',
+    'goal/changed',
+    'workflow/end',
+    'authorization/settled',
+    'deepseek-account/model-sign-in-required',
+    'deepseek-account/session-expired',
   ]) {
     assert.ok(harness.count(event) > 0, `expected a listener for ${event}`)
   }

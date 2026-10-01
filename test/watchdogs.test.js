@@ -53,7 +53,9 @@ test('a silent running turn alerts once, and again only after it moves and stall
   runtime.status({ sessionId: 's', running: true })
   tracker.noteTurnStart('s')
   runtime.activity({ sessionId: 's', at: t0 })
-  runtime.toolResult({ sessionId: 's', toolName: 'bash', result: { ok: true, content: 'still running' } })
+  // The tool name comes from the durable `tool/call` event the agent loop
+  // appends before dispatch, which is also what the completion alert counts.
+  runtime.sessionEvent('s', 'tool/call', { turn: 1, step: 1, name: 'bash' })
   runtime.activity({ sessionId: 's', at: t0 })
 
   assert.ok(scheduled.some((entry) => entry.delay === STALL_CHECK_MS), 'the watchdog arms itself while a turn is open')
