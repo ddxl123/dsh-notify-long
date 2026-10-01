@@ -115,6 +115,10 @@ function buildConfigSchema(z) {
       start: z.string(),
       end: z.string(),
     }),
+    // How long a running turn may stay silent before the stall alert fires.
+    // Composition configuration rather than a card field: it is a policy about
+    // the harness, not something an operator retunes per alert.
+    stallAfterMs: z.natural().default(600_000),
     alerts: z.object({
       channels: z.array(channel).default(['sound', 'desktop', 'email']).volatile(),
       dedupeWindowMs: z.natural().default(300_000),
@@ -168,6 +172,7 @@ export function defaultsFor(value) {
       timeoutMs: 20_000,
     },
     quietHours: {},
+    stallAfterMs: 600_000,
     alerts: {
       channels: ['sound', 'desktop', 'email'],
       dedupeWindowMs: 300_000,
@@ -356,6 +361,20 @@ export function apply(ctx, rawConfig) {
     }
   })
 
+  // Background jobs: the jobs registry publishes one `settled` event per job, so
+  // a failed job needs no polling. Only failures alert (see the runtime), and
+  // `jobs` is optional — a composition without the registry has no background
+  // work to report rather than a missing capability.
+  ctx.inject(['jobs'], (jobsCtx) => {
+    try {
+      const off = jobsCtx.jobs.events.subscribe({ owners: 'all' }, (event) => runtime.jobSettled(event))
+      jobsCtx.effect(() => off, 'dsh-notify-long: background job watcher')
+      log.debug('watching background jobs for failures')
+    } catch (error) {
+      log.warn(`could not watch background jobs; a failed job will not alert (${describeError(error)})`)
+    }
+  })
+
   // Each subscription group is guarded independently: if one harness event
   // disappears in a future release, only that capability goes quiet instead of
   // the whole composition failing to load.
@@ -438,6 +457,35 @@ export function apply(ctx, rawConfig) {
       runtime.approval({ sessionId: sessionOf(request), request })
       return next()
     }, { prepend: true })
+  })
+
+  // Account state: both of these mean the model route is dead until a human
+  // acts, and neither is reachable through a turn's own error path — the turn
+  // may not even be running when the credential goes.
+  subscribe(ctx, log, 'account state', () => {
+    ctx.on('deepseek-account/model-sign-in-required', () => runtime.account({ reason: 'sign-in-required' }))
+    ctx.on('deepseek-account/session-expired', () => runtime.account({ reason: 'session-expired' }))
+    ctx.on('authorization/settled', (key, settlement) => runtime.authorizationSettled({ key, settlement }))
+  })
+
+  subscribe(ctx, log, 'goal changes', () => {
+    ctx.on('goal/changed', (payload) => {
+      const sessionId = String(payload?.agent?.id ?? '')
+      runtime.goalChanged({ ...sessionId === '' ? {} : { sessionId }, change: payload?.change })
+    })
+  })
+
+  subscribe(ctx, log, 'workflow runs', () => {
+    ctx.on('workflow/end', (info, result) => runtime.workflowEnd({ info, result }))
+  })
+
+  // Stream frames are the finest-grained sign of life a running turn produces,
+  // and the stall watchdog needs exactly that.
+  subscribe(ctx, log, 'assistant stream', () => {
+    ctx.on('agent/assistant-stream', (payload) => {
+      const sessionId = String(payload?.agent?.id ?? '')
+      if (sessionId !== '') runtime.activity({ sessionId })
+    })
   })
 
   subscribe(ctx, log, 'subagent completions', () => {

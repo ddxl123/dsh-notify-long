@@ -101,15 +101,16 @@ bootTests('the plugin claims its own settings page when the service arrives afte
   // is made from an `inject` child rather than a one-shot `ctx.get('settings')`.
   const harness = createFakeHarness()
   await harness.mount({ email: { enabled: false }, sound: { enabled: false }, desktop: { enabled: false } })
-  // Two waits are parked: one for `settings` (this plugin's own page policy)
-  // and one for `connection` (the card's live log route). Neither is a hard
-  // dependency, so a headless deployment still activates.
-  assert.equal(harness.pendingInjectCount(), 2, 'the plugin must wait for settings and connection rather than read them once')
+  // Three waits are parked: one for `settings` (this plugin's own page policy),
+  // one for `connection` (the card's live log route), and one for `jobs` (the
+  // background-job failure watcher). None is a hard dependency, so a headless
+  // deployment still activates.
+  assert.equal(harness.pendingInjectCount(), 3, 'the plugin must wait for settings, connection and jobs rather than read them once')
   assert.deepEqual(harness.toolNames().sort(), ['notify_flush', 'notify_status', 'notify_test', 'notify_user'])
 
   const settings = createFakeSettings()
   harness.provide('settings', settings)
-  assert.equal(harness.pendingInjectCount(), 1)
+  assert.equal(harness.pendingInjectCount(), 2)
   assert.equal(settings.configurations().length, 1, 'the page policy is claimed once the service appears')
   assert.deepEqual(settings.configurations()[0].presentation, { auto: false }, 'the plugin renders its own page, so the generated one must stay off')
   assert.equal(settings.configurations()[0].owner, harness.ctx.fiber, 'the policy names the fiber it belongs to')

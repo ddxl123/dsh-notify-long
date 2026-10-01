@@ -232,6 +232,10 @@ alerts:
     question:  { enabled: true, channels: [sound, desktop, email] }  # per-kind override
     error:     { enabled: true }
     retry:     { enabled: true }    # a model request was retried (a flapping connection)
+    plan:      { enabled: true, channels: [email] }  # plan reviews by mail only
+    stall:     { enabled: true }    # a running turn went quiet
+    task:      { enabled: true }    # every change to the task list
+    job:       { enabled: true }    # a background job failed
     subagent:  { enabled: false }   # child agents are opt-in (they are chatty)
 sound:
   perKind:
@@ -258,16 +262,27 @@ The panel posts to one exact route, `/api/dsh-notify-long`, which the host half 
 | Event | Fires when | Default channels | Contents |
 | --- | --- | --- | --- |
 | `completed` | a turn that ran work ends and the session goes idle | all | last assistant reply plus tool-call, failure, and turn counts |
-| `question` | the agent calls `ask_user_question` (including plan review) | all | the questions and their options |
+| `question` | the agent calls `ask_user_question` | all | the questions and their options |
+| `plan` | the agent calls `exit_plan_mode` to present a plan | all | the whole plan (into the email body) plus the approve/keep-planning options |
 | `approval` | an action needs your permission | all | tool name and reason |
 | `error` | a turn/step failed, or a session-level error | all | the failure message and code, cooled down per fingerprint |
+| `stall` | a turn is still running but produced no stream output, tool result or session event for `stallAfterMs` (10 minutes by default) | all | how long it has been silent plus the last tool seen; one alert per silent episode |
 | `retry` | a model request failed and the harness is retrying it | all | failure reason, retry delay and attempt number, cooled down per failure family |
+| `account` | sign-in required, the account session expired, or a credential authorization failed | all | what has to happen, cooled down per reason |
+| `goal` | a goal was marked blocked (rounds exhausted included) | all | the goal, its block reason and rounds used |
+| `workflow` | a workflow run ended with `error` | all | the run name, the failure and how many agents it started |
+| `task` | the model rewrites its task list (`todo/write`), including finishing or clearing it | all | progress n/m, what is in progress, and the list itself |
+| `job` | a background job (`run_in_background`) settled as `failed` | all | job label and kind plus the failure detail |
 | `subagent` | a child agent settled (off by default) | off | the child's final output |
 | `manual` | the model calls `notify_user` | all | your own title and body |
 | `test` | `notify_test` self-check | all | per-channel results |
 
-Decision details — each of these is asserted in `test/triggers.test.js`:
+Decision details — each of these is asserted in `test/triggers.test.js`, `test/tasks.test.js` and `test/watchdogs.test.js`:
 
+- **A plan review is its own kind.** `exit_plan_mode` asks through the same `user-questions/request` waterfall as any question, marking it with `intent.kind: 'plan-review'`. The alert is raised as `plan`, its identity comes from `intent.callId` — so "keep planning → revise → present again" is never swallowed by the five-minute duplicate window — and the plan itself travels as `detail`, which the email renders in full while the banner keeps the title and options.
+- **The task list is reported change by change.** Every `todo_write` appends a `todo/write` snapshot to the session (the list resets on `turn/start`), and every change alerts, clearing included; rewriting an identical list does not. A list that ends fully completed suppresses the turn's later `completed` alert, and that suppression is lifted the moment unfinished work reappears.
+- **A stalled run is no longer silent.** A turn that is still running but has produced nothing for `stallAfterMs` (10 minutes by default) alerts once; any activity resets it, so a second stall alerts again. This is the one alert that fires because *nothing* happened.
+- **Background jobs report failures only.** The plugin subscribes to the jobs registry's `settled` event and alerts on `failed`. A `killed` job is your own stop, a completed one is explained by the turn that collects it, and `cause: 'teardown'` means the owner is being destroyed and has no reader left.
 - **A question always reaches you.** `user-questions/request` is a Cordis *waterfall*: the first listener that returns an answer claims the request and the rest of the chain never runs — and the browser UI is such an answerer. The plugin registers its observer with `prepend`, so "you are told" holds no matter who else is listening or in what order they registered, and it always delegates with `next()` so the request still reaches the UI. A question the harness sends without an agent identity still alerts.
 - **One alert per turn.** If the turn already alerted for a question, approval, or error, the idle transition does not add a "finished" notice.
 - **A failure is announced once.** The `agent/error` observer alerts the moment it sees the failure, and the idle assessment that follows reads the same cooldown key, so one failure never mails twice.
@@ -298,6 +313,7 @@ Every field is optional; defaults are in parentheses.
 ```yaml
 # every value below goes under `config:` in the `dsh-notify-long` row (see "Email by hand")
 enabled: true                # master switch
+stallAfterMs: 600000         # silence inside a running turn that counts as stalled
 language: auto               # alert language: auto (system) | en | zh
 
 sound:
@@ -344,7 +360,7 @@ alerts:
   dedupeWindowMs: 300000     # same event alerts once per 5 minutes
   errorCooldownMs: 600000    # same failure fingerprint cools down for 10 minutes
   channelCooldownMs: 15000   # sound burst collapse window
-  kinds: {}                  # { <kind>: { enabled, channels } }
+  kinds: {}                  # { <kind>: { enabled, channels } }; every kind is listed above
 
 outbox:
   path:                      # default ~/.dsh/dsh-notify-long/outbox.json

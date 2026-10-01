@@ -13,7 +13,7 @@ import { Engine } from '../lib/core/engine.js'
 import { Guard, quietHoursState } from '../lib/core/policy.js'
 import { makeRecord, Outbox } from '../lib/core/queue.js'
 import { Tracker } from '../lib/core/detect.js'
-import { createRuntime } from '../lib/runtime/handlers.js'
+import { createRuntime, IDLE_DELAY_MS } from '../lib/runtime/handlers.js'
 
 /** @returns {string} a fresh temporary directory */
 function tempDir() {
@@ -381,11 +381,14 @@ test('the runtime defers the idle assessment so a question can win the race', as
   tracker.noteSessionEvent('s', 'tool/call', {})
   tracker.noteTurnEnd('s', 1, { kind: 'completed' })
   runtime.status({ sessionId: 's', running: false })
-  assert.equal(scheduled.length, 1, 'the idle assessment is deferred')
+  // The watchdog arms itself on the running transition, so the idle assessment
+  // is the timer that carries IDLE_DELAY_MS rather than the only one scheduled.
+  const idle = scheduled.filter((entry) => entry.delay === IDLE_DELAY_MS)
+  assert.equal(idle.length, 1, 'the idle assessment is deferred')
   // The question arrives after the status transition, as it does in practice.
   runtime.question({ sessionId: 's', request: { questions: [{ id: 'q', question: 'Continue?' }] } })
   assert.equal(engine.events.length, 1)
-  scheduled[0].callback()
+  idle[0].callback()
   assert.equal(engine.events.length, 1, 'the deferred completion alert is skipped once a question was raised')
   assert.equal(engine.events[0].kind, 'question')
 })

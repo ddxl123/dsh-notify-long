@@ -236,6 +236,10 @@ alerts:
     question:  { enabled: true, channels: [sound, desktop, email] }  # 可按事件覆盖
     error:     { enabled: true }
     retry:     { enabled: true }      # 模型请求被自动重试（网络抖动）
+    plan:      { enabled: true, channels: [email] }  # 计划审批只发邮件
+    stall:     { enabled: true }      # 轮次静默 10 分钟
+    task:      { enabled: true }      # 任务清单每次变化
+    job:       { enabled: true }      # 后台任务失败
     subagent:  { enabled: false }     # 子任务完成默认不提醒（噪音大）
 sound:
   perKind:            # 给不同结果配不同提示音
@@ -262,10 +266,17 @@ desktop:
 | 事件 | 触发时机 | 默认通道 | 通知内容 |
 | --- | --- | --- | --- |
 | `completed` | 做过事的一轮结束、会话回到空闲 | 全部 | 最后一段回复摘要 + 工具调用次数、失败次数、轮次 |
-| `question` | agent 调用 `ask_user_question`（含 plan 审批） | 全部 | 问题正文 + 可选项 |
+| `question` | agent 调用 `ask_user_question` | 全部 | 问题正文 + 可选项 |
+| `plan` | agent 调 `exit_plan_mode` 请你批计划 | 全部 | 计划全文（进邮件正文）+ 批准/继续规划两个选项 |
 | `approval` | 需要你批准某个操作 | 全部 | 工具名 + 原因 |
 | `error` | 一轮/一步失败，或会话级错误 | 全部 | 失败原因（带错误码），按指纹 10 分钟冷却 |
+| `stall` | 轮次仍在运行，但 `stallAfterMs`（默认 10 分钟）内没有任何流式输出、工具结果或会话事件 | 全部 | 静默时长 + 最后跑过的工具；同一段静默只报一次 |
 | `retry` | 模型请求失败、harness 正在自动重试 | 全部 | 失败原因 + 重试延迟 + 第几次重试，同一失败按指纹冷却 |
+| `account` | 需要重新登录 / 账号会话过期 / 凭据授权失败 | 全部 | 需要做什么；按原因指纹冷却 |
+| `goal` | 目标被标记为阻塞（含轮次用尽） | 全部 | 目标 + 阻塞原因 + 已用轮次 |
+| `workflow` | workflow 以 `error` 结束 | 全部 | 运行名 + 失败信息 + 启动的子 agent 数 |
+| `task` | 模型每次改写任务清单（`todo/write`），含全部完成与清空 | 全部 | 进度 n/m + 进行中的条目 + 清单本身 |
+| `job` | 后台任务（`run_in_background`）以 `failed` 结束 | 全部 | 任务名/类型 + 失败信息 |
 | `subagent` | 子 agent 结束（默认关闭） | 关闭 | 子任务最终输出 |
 | `manual` | 模型主动调用 `notify_user` | 全部 | 自定义标题/正文 |
 | `test` | `notify_test` 自检 | 全部 | 通道逐项结果 |
@@ -273,7 +284,11 @@ desktop:
 判定细节（每一条都在 `test/triggers.test.js` 里被断言）：
 
 - **提问一定会通知到你**：`user-questions/request` 是 Cordis 的 **waterfall** 事件——第一个返回答案的监听者"认领"请求，后面的监听者全部不再执行，而浏览器界面正是这样一个应答者。插件用 `prepend` 注册自己的观察者，所以"你有没有被告知"不取决于还有谁在听、谁先注册；它始终用 `next()` 放行，请求照常送到界面。即使 harness 没带 agent 身份，提问也照样提醒。
-- **同一轮只提醒一次**：这一轮如果已经因为"提问/授权/报错"提醒过，会话回到空闲时不会再补一条"完成"。
+- **同一轮只提醒一次**：这一轮如果已经因为"提问/授权/报错/任务全部完成"提醒过，会话回到空闲时不会再补一条"完成"。
+- **计划审批有自己的类型**：`exit_plan_mode` 走的是和提问同一条 waterfall（`user-questions/request`），只是带上了 `intent.kind: 'plan-review'`。提醒因此归入 `plan`，指纹取自 `intent.callId`——"继续规划 → 改计划 → 再提交"不会被 5 分钟去重吞掉；计划全文作为 `detail` 进邮件正文（横幅只放标题和选项，放不下正文）。
+- **任务清单逐条播报**：模型每次 `todo_write` 都会往会话里追加一条 `todo/write` 快照（清单在 `turn/start` 重置），任何变化都提醒，包括清空；内容完全相同的重写不算变化。清单全部完成时会压掉这一轮稍后的 `completed`，但一旦又出现未完成条目，压制立即解除。
+- **卡死不再静默**：轮次还在 running、却连续 `stallAfterMs`（默认 10 分钟）没有流式输出、工具结果或会话事件时提醒一次；有动静就重置，之后再卡住会再报一次。这是唯一一个"什么都没发生"也会响的提醒。
+- **后台任务只报失败**：订阅 jobs 服务的 `settled` 事件，只有 `failed` 会报。`killed` 是你自己停的，正常完成由收尾的那一轮说明，`cause: 'teardown'` 表示 owner 正在被销毁、已经没有读者。
 - **一次失败只发一封**：`agent/error` 观察者一看到失败就提醒，随后的空闲判定用的是同一个冷却键，所以同一次失败不会发两封邮件。
 - **失败不会被说成"完成"**：如果某轮以失败结束、但没有观察到错误事件，空闲判定依然按"失败"提醒。
 - **重试也要告诉你**：模型请求失败、harness 安排下一次尝试时会写入 `llm/retry`，这一刻正是聊天界面显示「等待重试模型请求」、并列出失败原因和重试延迟的时刻；提醒里就带这两项，外加它在重试链里的位置（`第 2/5 次重试 · 提供方：deepseek`）。触发点是**安排重试**的 `llm/retry`，而不是稍后那条 `llm/retry-started`，所以一次重试只提醒一次。重试成功也不会吞掉这一轮：先重试后完成的会话会收到两条提醒（重试一条、完成一条）。
@@ -307,6 +322,7 @@ desktop:
 # 下面每一项都写在 `dsh-notify-long` 条目的 `config:` 下（见「手工配置」）
 enabled: true                # 总开关
 language: auto               # 提醒语言：auto（跟随系统）| zh | en
+stallAfterMs: 600000         # 轮次静默多久算卡住（毫秒）；有动静即重置
 
 sound:
   enabled: true
@@ -352,7 +368,7 @@ alerts:
   dedupeWindowMs: 300000     # 同一事件 5 分钟内只提醒一次
   errorCooldownMs: 600000    # 同指纹报错 10 分钟冷却
   channelCooldownMs: 15000   # 提示音突发合并窗口
-  kinds: {}                  # { completed|question|approval|error|retry|subagent|manual|test: { enabled, channels } }
+  kinds: {}                  # { completed|question|plan|approval|error|stall|retry|account|goal|workflow|task|job|subagent|manual|test: { enabled, channels } }
 
 outbox:
   path:                      # 默认 ~/.dsh/dsh-notify-long/outbox.json

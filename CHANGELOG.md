@@ -25,7 +25,52 @@ Notable changes to `dsh-notify-long`. This project follows
   `retry: { enabled: true, channels: [email] }` to keep the news without the
   tone. `retry` is the chattiest kind on an unreliable network.
 
+### Added
+
+- **Six more things that reach you**, all of them alerts that exist because
+  nothing else would fire:
+  - `stall` — a turn that is still running but has produced no stream output,
+    tool result or session event for `stallAfterMs` (10 minutes by default)
+    alerts once, naming how long it has been silent and the last tool seen. Any
+    activity resets it, so a second stall alerts again. This is the one alert
+    that fires because *nothing* happened.
+  - `account` — `deepseek-account/model-sign-in-required`,
+    `deepseek-account/session-expired`, and a failed `authorization/settled`:
+    the model route is dead until a human acts, and no turn may be running.
+  - `goal` — a goal marked blocked, rounds exhausted included, with the block
+    reason and the rounds it used.
+  - `workflow` — a workflow run that ended with `error`. A completed run is
+    explained by the turn that started it and a cancelled one is the operator's
+    own stop, so neither alerts.
+  - `job` — a background job that settled `failed`, read from the jobs
+    registry's `settled` event rather than polled. `killed`, completed, and
+    `teardown` settlements stay silent.
+  - `task` — every change to the model's task list (`todo/write`): progress,
+    finishing, and clearing, with the list itself in the body. A fully completed
+    list suppresses the turn's later `completed` alert, and that suppression is
+    lifted the moment unfinished work reappears.
+- `stallAfterMs` (default `600000`) as composition configuration.
+
 ### Changed
+
+- **A plan review is its own kind.** `exit_plan_mode` asks through the same
+  `user-questions/request` waterfall as any other question, so it used to arrive
+  as `question`. It now raises `plan`, which can be routed, quieted or toned on
+  its own.
+
+### Fixed
+
+- **A revised plan review is no longer swallowed.** Question alerts were keyed by
+  their text alone, and `exit_plan_mode` asks the identical prompt every time it
+  presents a plan — so a second review inside the five-minute duplicate window
+  produced nothing at all. Plan reviews now key on `intent.callId`. Ordinary
+  questions deliberately keep their text identity, so re-asking the identical
+  question inside the window stays one alert.
+- **The plan itself reaches the alert.** `exit_plan_mode` carries the plan as the
+  question's `detail`, which the alert now passes through: the email renders it in
+  full while the banner keeps the title and options.
+- **A stall alert can name the last tool.** The runtime records the tool name from
+  every `tools/result`, which is what the stall body quotes.
 
 - **The harness peers are imported the official way** (DSH 0.2 *profile
   resolution*). `@deepseek-ai/schemastery` and `@deepseek-ai/dsh-tools` are
