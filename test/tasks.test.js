@@ -76,45 +76,46 @@ test('every change to the task list is reported, and an identical rewrite is not
   assert.equal(tracker.factsOf(s)?.todos?.length, 2, 'the folded facts carry the current list')
 })
 
-test('a fully completed list alerts as such and suppresses the turn-end completion', () => {
+test('a fully completed list alerts as such, and the turn still reports its own completion', () => {
   const { runtime, tracker, events, beginTurn } = harness()
   const s = beginTurn()
   runtime.sessionEvent(s, 'todo/write', { todos: list('completed', 'completed') })
   assert.equal(events.length, 1)
   assert.match(events[0].title, /All tasks completed \(2\)/)
   assert.equal(events[0].urgency, 'action')
+  assert.equal(tracker.consumePending(s), undefined, 'a completed list raises no pending flag')
 
+  // The two alerts carry different news — the list, then the reply with its
+  // tool-call, failure and turn counts — so finishing the list never silences
+  // the completion of the turn that finished it.
   tracker.noteTurnEnd(s, 1, { kind: 'completed' })
-  runtime.finish(s, { becameIdle: true, pending: tracker.consumePending(s), facts: tracker.factsOf(s) })
-  assert.equal(events.length, 1, 'the completion alert would repeat the task alert')
+  runtime.finish(s, { becameIdle: true, pending: undefined, facts: tracker.factsOf(s) })
+  assert.equal(events.length, 2)
+  assert.equal(events[1].kind, 'completed')
 })
 
-test('finishing the list early does not silence the completion of the turn that kept working', () => {
+test('a list that grows after completion reports both the change and the completion', () => {
   const { runtime, tracker, events, beginTurn } = harness()
   const s = beginTurn()
   runtime.sessionEvent(s, 'todo/write', { todos: list('completed') })
   assert.equal(events.length, 1)
   runtime.sessionEvent(s, 'todo/write', { todos: [...list('completed'), { content: 'follow-up work', status: 'pending' }] })
   assert.equal(events.length, 2, 'new unfinished work is its own change')
-  assert.equal(tracker.consumePending(s), undefined, 'the task flag was dropped when work reappeared')
+  assert.match(events[1].title, /1\/2/)
 
   tracker.noteTurnEnd(s, 1, { kind: 'completed' })
-  runtime.finish(s, { becameIdle: true, pending: undefined, facts: tracker.factsOf(s) })
+  runtime.finish(s, { becameIdle: true, pending: tracker.consumePending(s), facts: tracker.factsOf(s) })
   assert.equal(events.length, 3)
   assert.equal(events[2].kind, 'completed')
 })
 
-test('clearing the list is reported, and a question still outranks a task notice', () => {
-  const { runtime, tracker, events, beginTurn } = harness()
+test('clearing the list is reported', () => {
+  const { runtime, events, beginTurn } = harness()
   const s = beginTurn()
   runtime.sessionEvent(s, 'todo/write', { todos: list('pending') })
   runtime.sessionEvent(s, 'todo/write', { todos: [] })
   assert.equal(events.length, 2)
   assert.match(events[1].title, /cleared/)
-
-  tracker.notePending(s, 'question')
-  tracker.notePending(s, 'task')
-  assert.equal(tracker.consumePending(s), 'question', 'a question is never downgraded by a task notice')
 })
 
 test('a plan review is its own kind, carries the plan, and survives a repeated prompt', () => {

@@ -46,9 +46,9 @@ Notable changes to `dsh-notify-long`. This project follows
     registry's `settled` event rather than polled. `killed`, completed, and
     `teardown` settlements stay silent.
   - `task` — every change to the model's task list (`todo/write`): progress,
-    finishing, and clearing, with the list itself in the body. A fully completed
-    list suppresses the turn's later `completed` alert, and that suppression is
-    lifted the moment unfinished work reappears.
+    finishing, and clearing, with the list itself in the body. Finishing the list
+    does not suppress the turn's own `completed` alert: the two say different
+    things, and every finished turn reports.
 - `stallAfterMs` (default `600000`) as composition configuration.
 
 ### Removed

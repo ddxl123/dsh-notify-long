@@ -265,6 +265,10 @@ bootTests('a finished turn produces a completion alert through the real wiring',
     data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'build the release' }] },
   })
   await harness.emit('session/event', session, {
+    type: 'tool/call',
+    data: { turn: 1, step: 1, callId: 'call-1', name: 'bash', arguments: '{}' },
+  })
+  await harness.emit('session/event', session, {
     type: 'tool/result',
     data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'ok' }] } },
   })
@@ -283,6 +287,9 @@ bootTests('a finished turn produces a completion alert through the real wiring',
   const outboxPath = join(home, 'dsh-notify-long', 'outbox.json')
   const outbox = JSON.parse(readFileSync(outboxPath, 'utf8'))
   assert.equal(outbox.items.length, 1, 'the refused completion alert is queued')
+  // The durable `tool/call` event is what the completion alert counts, so the
+  // queued body is where "1 tool call(s)" has to appear.
+  assert.match(outbox.items[0].body, /1 tool call\(s\)/)
   assert.equal(outbox.items[0].kind, 'completed')
   assert.match(outbox.items[0].title, /release/i)
   // The alert reached the engine: the debug log names the state directory.
